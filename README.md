@@ -40,17 +40,26 @@ curl -fsSL https://raw.githubusercontent.com/lmlight-app/staging-vite/main/scrip
 irm https://raw.githubusercontent.com/lmlight-app/staging-vite/main/scripts/install-windows.ps1 | iex
 ```
 
+### vLLM版 (Linux のみ)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/lmlight-app/staging-vite/main/scripts/install-linux-vllm.sh | bash
+```
+
 ## 本番 curl コマンド (dist_vite → R2)
 
 ```bash
 # macOS
-curl -fsSL https://raw.githubusercontent.com/lmlight-app/dist_vite/main/scripts/install-macos.sh | bash
+curl -fsSL https://pub-a2cab4360f1748cab5ae1c0f12cddc0a.r2.dev/vite-scripts/install-macos.sh | bash
 
 # Linux
-curl -fsSL https://raw.githubusercontent.com/lmlight-app/dist_vite/main/scripts/install-linux.sh | bash
+curl -fsSL https://pub-a2cab4360f1748cab5ae1c0f12cddc0a.r2.dev/vite-scripts/install-linux.sh | bash
 
 # Windows
-irm https://raw.githubusercontent.com/lmlight-app/dist_vite/main/scripts/install-windows.ps1 | iex
+irm https://pub-a2cab4360f1748cab5ae1c0f12cddc0a.r2.dev/vite-scripts/install-windows.ps1 | iex
+
+# vLLM (Linux)
+curl -fsSL https://pub-a2cab4360f1748cab5ae1c0f12cddc0a.r2.dev/vite-scripts/install-linux-vllm.sh | bash
 ```
 
 ## 本番昇格
