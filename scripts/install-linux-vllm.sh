@@ -2,7 +2,7 @@
 # AI Server Installer for Linux (vLLM Edition)
 set -e
 
-BASE_URL="${LMLIGHT_BASE_URL:-https://pub-a2cab4360f1748cab5ae1c0f12cddc0a.r2.dev/latest}"
+BASE_URL="${LMLIGHT_BASE_URL:-https://github.com/lmlight-app/dist_vite/releases/latest/download}"
 INSTALL_DIR="${LMLIGHT_INSTALL_DIR:-$HOME/.local/lmlight-vllm}"
 ARCH="$(uname -m)"
 case "$ARCH" in x86_64|amd64) ARCH="amd64" ;; aarch64|arm64) ARCH="arm64" ;; esac
@@ -16,7 +16,7 @@ mkdir -p "$INSTALL_DIR"/logs
 # Download vLLM backend binary (onefile, ~170MB)
 echo " Downloading vLLM backend..."
 
-BINARY_URL="$BASE_URL/lmlight-vllm-linux-$ARCH"
+BINARY_URL="$BASE_URL/lmlight-vite-vllm-linux-$ARCH"
 
 if command -v wget &>/dev/null; then
   wget --show-progress --timeout=600 --tries=3 "$BINARY_URL" -O "$INSTALL_DIR/api"
