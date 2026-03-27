@@ -25,21 +25,18 @@ promote.sh → R2 CDN (本番)
 ### macOS
 
 ```bash
-LMLIGHT_BASE_URL=https://github.com/lmlight-app/dist_vite/releases/latest/download \
-  curl -fsSL https://raw.githubusercontent.com/lmlight-app/staging-vite/main/scripts/install-macos.sh | bash
+curl -fsSL https://raw.githubusercontent.com/lmlight-app/staging-vite/main/scripts/install-macos.sh | bash
 ```
 
 ### Linux
 
 ```bash
-LMLIGHT_BASE_URL=https://github.com/lmlight-app/dist_vite/releases/latest/download \
-  curl -fsSL https://raw.githubusercontent.com/lmlight-app/staging-vite/main/scripts/install-linux.sh | bash
+curl -fsSL https://raw.githubusercontent.com/lmlight-app/staging-vite/main/scripts/install-linux.sh | bash
 ```
 
 ### Windows
 
 ```powershell
-$env:LMLIGHT_BASE_URL = "https://github.com/lmlight-app/dist_vite/releases/latest/download"
 irm https://raw.githubusercontent.com/lmlight-app/staging-vite/main/scripts/install-windows.ps1 | iex
 ```
 
