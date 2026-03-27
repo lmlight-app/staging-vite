@@ -191,7 +191,7 @@ if [ -f "$INSTALL_DIR/.env" ]; then
     fi
 fi
 echo "Setting up database..."
-curl -fsSL https://raw.githubusercontent.com/lmlight-app/staging-vite/main/scripts/db_setup.sh | bash
+curl -fsSL https://raw.githubusercontent.com/lmlight-app/dist_vite/main/scripts/db_setup.sh | bash
 
 cat > "$INSTALL_DIR/start.sh" << 'EOF'
 #!/bin/bash

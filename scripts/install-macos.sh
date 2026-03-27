@@ -3,7 +3,7 @@
 # Single binary with embedded frontend - no Node.js required
 set -e
 
-BASE_URL="${LMLIGHT_BASE_URL:-https://github.com/lmlight-app/staging-vite/releases/latest/download}"
+BASE_URL="${LMLIGHT_BASE_URL:-https://github.com/lmlight-app/dist_vite/releases/latest/download}"
 INSTALL_DIR="${LMLIGHT_INSTALL_DIR:-$HOME/.local/lmlight}"
 ARCH="$(uname -m)"
 case "$ARCH" in x86_64|amd64) ARCH="amd64" ;; aarch64|arm64) ARCH="arm64" ;; esac
@@ -76,7 +76,7 @@ if [ -f "$INSTALL_DIR/.env" ]; then
     fi
 fi
 echo "Setting up database..."
-curl -fsSL https://raw.githubusercontent.com/lmlight-app/staging-vite/main/scripts/db_setup.sh | bash
+curl -fsSL https://raw.githubusercontent.com/lmlight-app/dist_vite/main/scripts/db_setup.sh | bash
 
 cat > "$INSTALL_DIR/start.sh" << 'EOF'
 #!/bin/bash
