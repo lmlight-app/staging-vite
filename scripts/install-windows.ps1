@@ -1,0 +1,759 @@
+# AI Server インストーラー for Windows (Vite Edition)
+# 使い方: irm https://raw.githubusercontent.com/lmlight-app/staging-vite/main/scripts/install-windows.ps1 | iex
+
+$ErrorActionPreference = "Stop"
+
+# 設定
+$BASE_URL = if ($env:LMLIGHT_BASE_URL) { $env:LMLIGHT_BASE_URL } else { "https://github.com/lmlight-app/staging-vite/releases/latest/download" }
+$INSTALL_DIR = if ($env:LMLIGHT_INSTALL_DIR) { $env:LMLIGHT_INSTALL_DIR } else { "$env:LOCALAPPDATA\lmlight" }
+$ARCH = "amd64"  # Windows は x64 のみサポート
+
+# データベース設定 (デフォルト値、.env があればそちらを優先)
+$DB_USER = "lmlight"
+$DB_PASSWORD = "lmlight"
+$DB_NAME = "lmlight"
+
+# 既存 .env から DATABASE_URL を読み取り (アップデート時にカスタム設定を反映)
+if (Test-Path "$INSTALL_DIR\.env") {
+    $dbUrlLine = Get-Content "$INSTALL_DIR\.env" | Where-Object { $_ -match "^DATABASE_URL=" } | Select-Object -First 1
+    if ($dbUrlLine -match "^DATABASE_URL=postgresql://([^:]+):([^@]+)@[^/]+/([^?]+)") {
+        $DB_USER = $matches[1]
+        $DB_PASSWORD = $matches[2]
+        $DB_NAME = $matches[3]
+    }
+}
+
+# カラー定義（PowerShell）
+function Write-Info { param($msg) Write-Host "[情報] $msg" -ForegroundColor Blue }
+function Write-Success { param($msg) Write-Host "[OK] $msg" -ForegroundColor Green }
+function Write-Error { param($msg) Write-Host "[エラー] $msg" -ForegroundColor Red; exit 1 }
+function Write-Warn { param($msg) Write-Host "[警告] $msg" -ForegroundColor Yellow }
+
+Write-Host ""
+Write-Host "╔═══════════════════════════════════════════════════════╗" -ForegroundColor Blue
+Write-Host "║      AI Server インストーラー for Windows             ║" -ForegroundColor Blue
+Write-Host "╚═══════════════════════════════════════════════════════╝" -ForegroundColor Blue
+Write-Host ""
+
+Write-Info "アーキテクチャ: $ARCH"
+Write-Info "インストール先: $INSTALL_DIR"
+
+# 管理者権限チェック
+$isAdmin = ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+if (-not $isAdmin) {
+    Write-Warn "管理者権限で実行していません。一部の機能が制限される場合があります。"
+}
+
+# ディレクトリ作成
+New-Item -ItemType Directory -Force -Path "$INSTALL_DIR" | Out-Null
+New-Item -ItemType Directory -Force -Path "$INSTALL_DIR\logs" | Out-Null
+
+# 既存インストールチェック
+if (Test-Path "$INSTALL_DIR\api.exe") {
+    Write-Info "既存のインストールを検出しました。アップデート中..."
+
+    # 既存プロセス停止
+    Write-Info "既存のプロセスを停止中..."
+    Get-Process -Name "api" -ErrorAction SilentlyContinue | Where-Object { $_.Path -like "*lmlight*" } | Stop-Process -Force
+    Start-Sleep -Seconds 2
+    Write-Success "既存のプロセスを停止しました"
+}
+
+# ============================================================
+# ステップ 1: バイナリダウンロード
+# ============================================================
+Write-Info "ステップ 1/4: バイナリをダウンロード中..."
+
+Write-Info "バイナリをダウンロード中..."
+$BACKEND_FILE = "lmlight-vite-windows-$ARCH.exe"
+Invoke-WebRequest -Uri "$BASE_URL/$BACKEND_FILE" -OutFile "$INSTALL_DIR\api.exe" -UseBasicParsing
+Write-Success "バイナリをダウンロードしました"
+
+# ============================================================
+# ステップ 2: 依存関係チェック
+# ============================================================
+Write-Info "ステップ 2/4: 依存関係をチェック中..."
+
+$MISSING_DEPS = @()
+
+# PostgreSQL チェック
+if (Get-Command psql -ErrorAction SilentlyContinue) {
+    Write-Success "PostgreSQL が見つかりました"
+} else {
+    Write-Warn "PostgreSQL が見つかりません"
+    $MISSING_DEPS += "postgresql"
+}
+
+# Ollama チェック
+if (Get-Command ollama -ErrorAction SilentlyContinue) {
+    Write-Success "Ollama が見つかりました"
+} else {
+    Write-Warn "Ollama が見つかりません"
+    $MISSING_DEPS += "ollama"
+}
+
+# Tesseract OCR チェック (オプション: 画像OCR用)
+if ((Get-Command tesseract -ErrorAction SilentlyContinue) -or (Test-Path "C:\Program Files\Tesseract-OCR\tesseract.exe")) {
+    Write-Success "Tesseract OCR が見つかりました (画像OCR用)"
+} else {
+    Write-Warn "Tesseract OCR 未接続 (オプション: 画像OCR用)"
+    $MISSING_DEPS += "tesseract"
+}
+
+# winget で依存関係をインストール（オプション）
+if ($MISSING_DEPS.Count -gt 0 -and $isAdmin) {
+    Write-Info "不足している依存関係を自動インストールしますか？ (Y/n)"
+    $response = Read-Host
+    if ($response -eq "" -or $response -eq "Y" -or $response -eq "y") {
+        foreach ($dep in $MISSING_DEPS) {
+            switch ($dep) {
+                "postgresql" {
+                    Write-Info "PostgreSQL をインストール中..."
+                    winget install -e --id PostgreSQL.PostgreSQL --silent --accept-package-agreements --accept-source-agreements
+                }
+                "ollama" {
+                    Write-Info "Ollama をインストール中..."
+                    $null = winget install -e --id Ollama.Ollama --silent --accept-package-agreements --accept-source-agreements 2>&1
+                    if ($LASTEXITCODE -eq 0) {
+                        Write-Success "Ollama をインストールしました"
+                    }
+                }
+                "tesseract" {
+                    Write-Info "Tesseract OCR をインストール中..."
+                    Write-Warn "Tesseract は手動インストールが必要です: https://github.com/UB-Mannheim/tesseract/wiki"
+                }
+            }
+        }
+    }
+}
+
+# ============================================================
+# ステップ 3: PostgreSQL セットアップ
+# ============================================================
+Write-Info "ステップ 3/4: PostgreSQL をセットアップ中..."
+
+# PostgreSQL ポート検出
+$DB_PORT = "5432"
+
+if (Get-Command psql -ErrorAction SilentlyContinue) {
+    Write-Info "データベースを作成中..."
+
+    # PostgreSQL サービス起動
+    $pgService = Get-Service -Name "postgresql*" -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($pgService -and $pgService.Status -ne "Running") {
+        Start-Service $pgService.Name
+        Start-Sleep -Seconds 3
+    }
+
+    # ポート検出: 5432 → 5433 の順で試行
+    $env:PGPASSWORD = "postgres"
+    $ErrorActionPreference = "Continue"
+    $null = psql -U postgres -p 5432 -c "SELECT 1" 2>$null
+    if ($LASTEXITCODE -ne 0) {
+        $null = psql -U postgres -p 5433 -c "SELECT 1" 2>$null
+        if ($LASTEXITCODE -eq 0) {
+            $DB_PORT = "5433"
+            Write-Info "PostgreSQL ポート: 5433"
+        }
+    } else {
+        Write-Info "PostgreSQL ポート: 5432"
+    }
+    # データベースとユーザー作成 (エラーは無視)
+    $null = psql -U postgres -p $DB_PORT -c "CREATE USER $DB_USER WITH PASSWORD '$DB_PASSWORD';" 2>$null
+    $null = psql -U postgres -p $DB_PORT -c "CREATE DATABASE $DB_NAME OWNER $DB_USER;" 2>$null
+    $null = psql -U postgres -p $DB_PORT -c "ALTER USER $DB_USER CREATEDB;" 2>$null
+
+    # pgvector拡張
+    $null = psql -U postgres -p $DB_PORT -d $DB_NAME -c "CREATE EXTENSION IF NOT EXISTS vector;" 2>$null
+
+    $ErrorActionPreference = "Stop"
+
+    # マイグレーション実行
+    Write-Info "データベースマイグレーションを実行中..."
+
+    $SQL_MIGRATION = @"
+-- 列挙型
+DO `$`$ BEGIN CREATE TYPE "UserRole" AS ENUM ('ADMIN', 'SUPER', 'USER'); EXCEPTION WHEN duplicate_object THEN null; END `$`$;
+DO `$`$ BEGIN CREATE TYPE "UserStatus" AS ENUM ('ACTIVE', 'INACTIVE'); EXCEPTION WHEN duplicate_object THEN null; END `$`$;
+DO `$`$ BEGIN CREATE TYPE "MessageRole" AS ENUM ('USER', 'ASSISTANT', 'SYSTEM'); EXCEPTION WHEN duplicate_object THEN null; END `$`$;
+DO `$`$ BEGIN CREATE TYPE "ShareType" AS ENUM ('PRIVATE', 'TAG'); EXCEPTION WHEN duplicate_object THEN null; END `$`$;
+DO `$`$ BEGIN CREATE TYPE "DocumentType" AS ENUM ('PDF', 'WEB', 'TEXT', 'CSV', 'EXCEL', 'WORD', 'IMAGE', 'JSON'); EXCEPTION WHEN duplicate_object THEN null; END `$`$;
+DO `$`$ BEGIN CREATE TYPE "ApprovalStatus" AS ENUM ('PENDING', 'APPROVED', 'REJECTED'); EXCEPTION WHEN duplicate_object THEN null; END `$`$;
+
+-- Rename from UserSettings if upgrading
+DO `$`$ BEGIN
+    IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'UserSettings' AND table_schema = 'public') THEN
+        ALTER TABLE "UserSettings" RENAME TO "DefaultSetting";
+    END IF;
+END `$`$;
+
+-- テーブル
+CREATE TABLE IF NOT EXISTS "User" (
+    "id" TEXT NOT NULL PRIMARY KEY,
+    "name" TEXT,
+    "email" TEXT NOT NULL UNIQUE,
+    "emailVerified" TIMESTAMP(3),
+    "image" TEXT,
+    "hashedPassword" TEXT,
+    "authProvider" TEXT NOT NULL DEFAULT 'local',
+    "role" "UserRole" NOT NULL DEFAULT 'USER',
+    "status" "UserStatus" NOT NULL DEFAULT 'ACTIVE',
+    "lastLoginAt" TIMESTAMP(3),
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS "DefaultSetting" (
+    "id" TEXT NOT NULL PRIMARY KEY,
+    "userId" TEXT NOT NULL UNIQUE,
+    "defaultModel" TEXT,
+    "customPrompt" TEXT,
+    "historyLimit" INTEGER NOT NULL DEFAULT 2,
+    "temperature" DOUBLE PRECISION NOT NULL DEFAULT 0.7,
+    "maxTokens" INTEGER NOT NULL DEFAULT 2048,
+    "numCtx" INTEGER NOT NULL DEFAULT 8192,
+    "topP" DOUBLE PRECISION NOT NULL DEFAULT 0.9,
+    "topK" INTEGER NOT NULL DEFAULT 40,
+    "repeatPenalty" DOUBLE PRECISION NOT NULL DEFAULT 1.1,
+    "reasoningMode" TEXT NOT NULL DEFAULT 'normal',
+    "ragTopK" INTEGER NOT NULL DEFAULT 5,
+    "ragMinSimilarity" DOUBLE PRECISION NOT NULL DEFAULT 0.45,
+    "embeddingModel" TEXT NOT NULL DEFAULT 'embeddinggemma:latest',
+    "chunkSize" INTEGER NOT NULL DEFAULT 500,
+    "chunkOverlap" INTEGER NOT NULL DEFAULT 100,
+    "visionModel" TEXT,
+    "brandColor" TEXT NOT NULL DEFAULT 'default',
+    "customLogoText" TEXT DEFAULT 'LL',
+    "customLogoImage" TEXT,
+    "customTitle" TEXT DEFAULT 'LM LIGHT',
+    "sidebarItems" JSONB,
+    "sqlConnection" JSONB,
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS "Tag" (
+    "id" TEXT NOT NULL PRIMARY KEY,
+    "name" TEXT NOT NULL UNIQUE,
+    "description" TEXT,
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS "UserTag" (
+    "id" TEXT NOT NULL PRIMARY KEY,
+    "userId" TEXT NOT NULL,
+    "tagId" TEXT NOT NULL,
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE ("userId", "tagId")
+);
+
+CREATE TABLE IF NOT EXISTS "Bot" (
+    "id" TEXT NOT NULL PRIMARY KEY,
+    "userId" TEXT NOT NULL,
+    "name" TEXT NOT NULL,
+    "description" TEXT,
+    "url" TEXT,
+    "shareType" "ShareType" NOT NULL DEFAULT 'PRIVATE',
+    "shareTagId" TEXT,
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS "Document" (
+    "id" TEXT NOT NULL PRIMARY KEY,
+    "botId" TEXT NOT NULL,
+    "name" TEXT NOT NULL,
+    "type" "DocumentType" NOT NULL DEFAULT 'PDF',
+    "url" TEXT,
+    "metadata" JSONB,
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS "Chat" (
+    "id" TEXT NOT NULL PRIMARY KEY,
+    "userId" TEXT NOT NULL,
+    "model" TEXT NOT NULL,
+    "sessionId" TEXT NOT NULL,
+    "botId" TEXT,
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS "Message" (
+    "id" TEXT NOT NULL PRIMARY KEY,
+    "chatId" TEXT NOT NULL,
+    "role" "MessageRole" NOT NULL,
+    "content" TEXT NOT NULL,
+    "metadata" JSONB,
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS "Workflow" (
+    "id" TEXT NOT NULL PRIMARY KEY,
+    "name" TEXT NOT NULL,
+    "description" TEXT,
+    "webhookUrl" TEXT NOT NULL,
+    "method" TEXT NOT NULL DEFAULT 'POST',
+    "headers" JSONB,
+    "body" JSONB,
+    "attachments" JSONB,
+    "createdBy" TEXT NOT NULL,
+    "shareTagId" TEXT,
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS "WorkflowExecution" (
+    "id" TEXT NOT NULL PRIMARY KEY,
+    "workflowId" TEXT NOT NULL,
+    "executedBy" TEXT NOT NULL,
+    "status" TEXT NOT NULL,
+    "statusCode" INTEGER,
+    "response" TEXT,
+    "error" TEXT,
+    "duration" INTEGER,
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS "ApprovalFlow" (
+    "id" TEXT NOT NULL PRIMARY KEY,
+    "name" TEXT NOT NULL,
+    "description" TEXT,
+    "requesterIds" JSONB NOT NULL,
+    "notificationWebhookUrl" TEXT,
+    "createdBy" TEXT NOT NULL,
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS "ApprovalFlowStep" (
+    "id" TEXT NOT NULL PRIMARY KEY,
+    "flowId" TEXT NOT NULL,
+    "stepOrder" INTEGER NOT NULL,
+    "label" TEXT,
+    "approverIds" JSONB NOT NULL,
+    UNIQUE ("flowId", "stepOrder")
+);
+
+CREATE TABLE IF NOT EXISTS "ApprovalRequest" (
+    "id" TEXT NOT NULL PRIMARY KEY,
+    "flowId" TEXT NOT NULL,
+    "title" TEXT NOT NULL,
+    "body" TEXT,
+    "attachments" JSONB,
+    "requestedBy" TEXT NOT NULL,
+    "status" "ApprovalStatus" NOT NULL DEFAULT 'PENDING',
+    "currentStep" INTEGER NOT NULL DEFAULT 1,
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS "ApprovalStepResult" (
+    "id" TEXT NOT NULL PRIMARY KEY,
+    "requestId" TEXT NOT NULL,
+    "stepOrder" INTEGER NOT NULL,
+    "status" "ApprovalStatus" NOT NULL,
+    "approvedBy" TEXT,
+    "comment" TEXT,
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE ("requestId", "stepOrder")
+);
+
+CREATE TABLE IF NOT EXISTS "SavedSqlConnection" (
+    "id" TEXT NOT NULL PRIMARY KEY,
+    "name" TEXT NOT NULL,
+    "host" TEXT NOT NULL DEFAULT 'localhost',
+    "port" INTEGER NOT NULL DEFAULT 5432,
+    "database" TEXT NOT NULL,
+    "dbUser" TEXT NOT NULL,
+    "password" TEXT NOT NULL,
+    "userId" TEXT NOT NULL,
+    "shareType" "ShareType" NOT NULL DEFAULT 'PRIVATE',
+    "shareTagId" TEXT,
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS "Prompt" (
+    "id" TEXT NOT NULL PRIMARY KEY,
+    "title" TEXT NOT NULL,
+    "content" TEXT NOT NULL,
+    "userId" TEXT NOT NULL,
+    "shareType" "ShareType" NOT NULL DEFAULT 'PRIVATE',
+    "shareTagId" TEXT,
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+-- pgvector schema
+CREATE SCHEMA IF NOT EXISTS pgvector;
+CREATE TABLE IF NOT EXISTS pgvector.embeddings (
+    id SERIAL PRIMARY KEY,
+    bot_id VARCHAR(255) NOT NULL,
+    user_id VARCHAR(255) NOT NULL,
+    document_id VARCHAR(255) NOT NULL,
+    chunk_id INTEGER NOT NULL,
+    content TEXT NOT NULL,
+    embedding vector,
+    metadata JSONB,
+    created_at TIMESTAMP DEFAULT NOW()
+);
+
+-- インデックス
+CREATE INDEX IF NOT EXISTS "UserTag_userId_idx" ON "UserTag"("userId");
+CREATE INDEX IF NOT EXISTS "UserTag_tagId_idx" ON "UserTag"("tagId");
+CREATE INDEX IF NOT EXISTS "Bot_userId_idx" ON "Bot"("userId");
+CREATE INDEX IF NOT EXISTS "Bot_shareTagId_idx" ON "Bot"("shareTagId");
+CREATE INDEX IF NOT EXISTS "Document_botId_idx" ON "Document"("botId");
+CREATE INDEX IF NOT EXISTS "Chat_sessionId_idx" ON "Chat"("sessionId");
+CREATE INDEX IF NOT EXISTS "Chat_userId_model_idx" ON "Chat"("userId", "model");
+CREATE INDEX IF NOT EXISTS "Chat_userId_idx" ON "Chat"("userId");
+CREATE INDEX IF NOT EXISTS "Chat_botId_idx" ON "Chat"("botId");
+CREATE INDEX IF NOT EXISTS "Message_chatId_createdAt_idx" ON "Message"("chatId", "createdAt");
+CREATE INDEX IF NOT EXISTS "Workflow_createdBy_idx" ON "Workflow"("createdBy");
+CREATE INDEX IF NOT EXISTS "Workflow_shareTagId_idx" ON "Workflow"("shareTagId");
+CREATE INDEX IF NOT EXISTS "WorkflowExecution_workflowId_createdAt_idx" ON "WorkflowExecution"("workflowId", "createdAt");
+CREATE INDEX IF NOT EXISTS "WorkflowExecution_executedBy_idx" ON "WorkflowExecution"("executedBy");
+CREATE INDEX IF NOT EXISTS "ApprovalFlow_createdBy_idx" ON "ApprovalFlow"("createdBy");
+CREATE INDEX IF NOT EXISTS "ApprovalFlowStep_flowId_idx" ON "ApprovalFlowStep"("flowId");
+CREATE INDEX IF NOT EXISTS "ApprovalRequest_flowId_idx" ON "ApprovalRequest"("flowId");
+CREATE INDEX IF NOT EXISTS "ApprovalRequest_requestedBy_idx" ON "ApprovalRequest"("requestedBy");
+CREATE INDEX IF NOT EXISTS "ApprovalStepResult_requestId_idx" ON "ApprovalStepResult"("requestId");
+CREATE INDEX IF NOT EXISTS "SavedSqlConnection_userId_idx" ON "SavedSqlConnection"("userId");
+CREATE INDEX IF NOT EXISTS "SavedSqlConnection_shareTagId_idx" ON "SavedSqlConnection"("shareTagId");
+CREATE INDEX IF NOT EXISTS "Prompt_userId_idx" ON "Prompt"("userId");
+CREATE INDEX IF NOT EXISTS "Prompt_shareTagId_idx" ON "Prompt"("shareTagId");
+CREATE INDEX IF NOT EXISTS idx_bot_user ON pgvector.embeddings (bot_id, user_id);
+CREATE INDEX IF NOT EXISTS idx_document ON pgvector.embeddings (document_id);
+CREATE INDEX IF NOT EXISTS idx_embeddings_hnsw ON pgvector.embeddings USING hnsw (embedding vector_cosine_ops);
+
+-- Approval notification webhook URL
+DO `$`$ BEGIN
+    ALTER TABLE "ApprovalFlow" ADD COLUMN IF NOT EXISTS "notificationWebhookUrl" TEXT;
+EXCEPTION WHEN undefined_table THEN null; WHEN duplicate_column THEN null; END `$`$;
+
+-- Auth provider column (AD integration, for existing installs)
+DO `$`$ BEGIN
+    ALTER TABLE "User" ADD COLUMN IF NOT EXISTS "authProvider" TEXT NOT NULL DEFAULT 'local';
+EXCEPTION WHEN undefined_table THEN null; WHEN duplicate_column THEN null; END `$`$;
+
+-- 管理者ユーザー (admin@local / admin123)
+INSERT INTO "User" ("id", "email", "name", "hashedPassword", "role", "status", "updatedAt")
+VALUES (
+    'admin-user-id',
+    'admin@local',
+    'Admin',
+    '`$2b`$12`$AIctg50Pbt418E7ir3HlUOP1HWKO4PSP01HfIsx8v6Ab.Td7G5h72',
+    'ADMIN',
+    'ACTIVE',
+    CURRENT_TIMESTAMP
+) ON CONFLICT ("id") DO NOTHING;
+
+-- 権限付与
+GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO $DB_USER;
+GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO $DB_USER;
+GRANT ALL PRIVILEGES ON SCHEMA pgvector TO $DB_USER;
+GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA pgvector TO $DB_USER;
+GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA pgvector TO $DB_USER;
+"@
+
+    $ErrorActionPreference = "Continue"
+    $null = $SQL_MIGRATION | psql -q -U postgres -p $DB_PORT -d $DB_NAME 2>$null
+    $ErrorActionPreference = "Stop"
+    Write-Success "データベースマイグレーションが完了しました"
+} else {
+    Write-Warn "PostgreSQL がインストールされていないため、データベースセットアップをスキップしました"
+}
+
+# ============================================================
+# ステップ 4: Ollama セットアップ
+# ============================================================
+Write-Info "ステップ 4/4: Ollama をセットアップ中..."
+
+if (Get-Command ollama -ErrorAction SilentlyContinue) {
+    # Ollama が起動していない場合は起動
+    $ollamaProcess = Get-Process -Name "ollama" -ErrorAction SilentlyContinue
+    if (-not $ollamaProcess) {
+        Write-Info "Ollama を起動中..."
+        Start-Process -FilePath "ollama" -ArgumentList "serve" -WindowStyle Hidden
+        Start-Sleep -Seconds 3
+    }
+
+}
+
+# ============================================================
+# ステップ 5: 設定とスクリプト作成
+# ============================================================
+Write-Info "ステップ 5/5: 設定を作成中..."
+
+# .env ファイル作成 (存在しない場合のみ)
+if (-not (Test-Path "$INSTALL_DIR\.env")) {
+    $ENV_CONTENT = @"
+# AI Server Configuration
+DATABASE_URL=postgresql://${DB_USER}:${DB_PASSWORD}@localhost:${DB_PORT}/${DB_NAME}
+OLLAMA_BASE_URL=http://localhost:11434
+# OLLAMA_NUM_PARALLEL=8
+LICENSE_FILE_PATH=$INSTALL_DIR\license.lic
+
+# Server Configuration (API + Web on single port)
+API_HOST=0.0.0.0
+API_PORT=8000
+
+# Authentication
+JWT_SECRET=$(-join ((48..57) + (97..122) | Get-Random -Count 64 | ForEach-Object { [char]`$_ }))
+AUTH_MODE=local
+
+# Whisper Transcription
+# WHISPER_MODEL=tiny
+
+# LDAP (AUTH_MODE=ldap)
+# LDAP_HOST=your-ad-server.company.local
+# LDAP_PORT=389
+# LDAP_USE_SSL=false
+# LDAP_BASE_DN=dc=company,dc=local
+# LDAP_USER_DN_FORMAT={username}@company.local
+# LDAP_BIND_DN=
+# LDAP_BIND_PASSWORD=
+
+# OIDC / Azure AD (AUTH_MODE=oidc)
+# OIDC_CLIENT_ID=
+# OIDC_CLIENT_SECRET=
+# OIDC_TENANT_ID=
+"@
+    Set-Content -Path "$INSTALL_DIR\.env" -Value $ENV_CONTENT -Encoding UTF8
+    Write-Success ".env ファイルを作成しました"
+} else {
+    Write-Info ".env ファイルは既存のため、スキップしました"
+}
+
+# 起動スクリプト作成
+$START_SCRIPT = @'
+# AI Server 起動スクリプト
+$INSTALL_DIR = "$env:LOCALAPPDATA\lmlight"
+Set-Location $INSTALL_DIR
+
+# .env 読み込み
+if (Test-Path "$INSTALL_DIR\.env") {
+    Get-Content "$INSTALL_DIR\.env" | ForEach-Object {
+        if ($_ -match "^([^#][^=]+)=(.*)$") {
+            [System.Environment]::SetEnvironmentVariable($matches[1].Trim(), $matches[2].Trim())
+        }
+    }
+}
+
+# Tesseract OCR (画像OCR用)
+if (Test-Path "C:\Program Files\Tesseract-OCR\tesseract.exe") {
+    $env:PATH = "C:\Program Files\Tesseract-OCR;$env:PATH"
+    $env:TESSDATA_PREFIX = "C:\Program Files\Tesseract-OCR\tessdata"
+}
+
+# FFmpeg PATH 設定 (文字起こし用・オプション)
+if (-not (Get-Command ffmpeg -ErrorAction SilentlyContinue)) {
+    @(
+        "$env:LOCALAPPDATA\Microsoft\WinGet\Packages\Gyan.FFmpeg_*\ffmpeg-*-full_build\bin",
+        "$env:LOCALAPPDATA\Microsoft\WinGet\Packages\Gyan.FFmpeg_*\ffmpeg-*\bin",
+        "C:\ProgramData\chocolatey\lib\ffmpeg\tools\ffmpeg\bin",
+        "$env:USERPROFILE\scoop\apps\ffmpeg\current\bin"
+    ) | ForEach-Object {
+        $p = Resolve-Path -Path $_ -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($p -and (Test-Path "$($p.Path)\ffmpeg.exe")) { $env:PATH = "$($p.Path);$env:PATH"; return }
+    }
+}
+
+Write-Host "AI Server を起動中..." -ForegroundColor Blue
+
+# PostgreSQL チェック
+$pgService = Get-Service -Name "postgresql*" -ErrorAction SilentlyContinue | Select-Object -First 1
+if ($pgService -and $pgService.Status -ne "Running") {
+    Write-Host "PostgreSQL を起動中..."
+    Start-Service $pgService.Name
+    Start-Sleep -Seconds 2
+}
+
+# Ollama チェック
+if (-not (Get-Process -Name "ollama" -ErrorAction SilentlyContinue)) {
+    Write-Host "Ollama を起動中..."
+    Start-Process -FilePath "ollama" -ArgumentList "serve" -WindowStyle Hidden
+    Start-Sleep -Seconds 3
+}
+
+# 既存プロセス終了
+Get-Process -Name "api" -ErrorAction SilentlyContinue | Where-Object { $_.Path -like "*lmlight*" } | Stop-Process -Force
+Start-Sleep -Seconds 1
+
+if (-not $env:API_PORT) { $env:API_PORT = "8000" }
+
+# API 起動 (single process: API + Web frontend)
+Write-Host "API を起動中..."
+$apiProcess = Start-Process -FilePath "$INSTALL_DIR\api.exe" -WorkingDirectory $INSTALL_DIR -NoNewWindow -PassThru
+Start-Sleep -Seconds 3
+
+Write-Host ""
+Write-Host "AI Server が起動しました！" -ForegroundColor Green
+Write-Host ""
+Write-Host "  http://localhost:$($env:API_PORT)" -ForegroundColor Cyan
+
+# LAN IP 表示
+$lanIp = (Get-NetIPAddress -AddressFamily IPv4 | Where-Object { $_.IPAddress -ne "127.0.0.1" -and $_.PrefixOrigin -ne "WellKnown" } | Select-Object -First 1).IPAddress
+if ($lanIp) { Write-Host "  LAN:  http://${lanIp}:$($env:API_PORT)" -ForegroundColor Cyan }
+
+# mDNS hostname 表示 (Windows 10 1709+)
+$mdnsName = "$([System.Net.Dns]::GetHostName()).local"
+Write-Host "  mDNS: http://${mdnsName}:$($env:API_PORT)" -ForegroundColor Cyan
+
+Write-Host ""
+Write-Host "  Ctrl+C で停止" -ForegroundColor Yellow
+Write-Host ""
+
+# Ctrl+C ハンドラー
+$null = Register-EngineEvent -SourceIdentifier PowerShell.Exiting -Action {
+    Stop-Process -Id $apiProcess.Id -Force -ErrorAction SilentlyContinue
+}
+
+try {
+    # プロセス終了まで待機
+    Wait-Process -Id $apiProcess.Id, $appProcess.Id -ErrorAction SilentlyContinue
+} finally {
+    Write-Host "Stopped"
+    Stop-Process -Id $apiProcess.Id -Force -ErrorAction SilentlyContinue
+    Stop-Process -Id $appProcess.Id -Force -ErrorAction SilentlyContinue
+}
+'@
+
+Set-Content -Path "$INSTALL_DIR\start.ps1" -Value $START_SCRIPT -Encoding UTF8
+
+# 停止スクリプト作成
+$STOP_SCRIPT = @'
+# AI Server 停止スクリプト
+Write-Host "AI Server を停止中..."
+
+Get-Process -Name "api" -ErrorAction SilentlyContinue | Where-Object { $_.Path -like "*lmlight*" } | Stop-Process -Force
+
+Write-Host "AI Server を停止しました" -ForegroundColor Green
+'@
+
+Set-Content -Path "$INSTALL_DIR\stop.ps1" -Value $STOP_SCRIPT -Encoding UTF8
+
+# トグルスクリプト作成（macOSと同様の動作）
+$TOGGLE_SCRIPT = @'
+# AI Server トグルスクリプト
+# 起動中ならStop、停止中ならStart
+
+$INSTALL_DIR = "$env:LOCALAPPDATA\lmlight"
+Set-Location $INSTALL_DIR
+
+# .env 読み込み
+$API_PORT = 8000
+if (Test-Path "$INSTALL_DIR\.env") {
+    Get-Content "$INSTALL_DIR\.env" | ForEach-Object {
+        if ($_ -match "^API_PORT=(.*)$") { $API_PORT = $matches[1] }
+    }
+}
+
+# ヘルスチェック
+$isRunning = $false
+try {
+    $response = Invoke-WebRequest -Uri "http://localhost:$API_PORT/health" -UseBasicParsing -TimeoutSec 2 -ErrorAction Stop
+    $isRunning = $true
+} catch { }
+
+if ($isRunning) {
+    # 起動中 → 停止
+    & "$INSTALL_DIR\stop.ps1"
+
+    # トースト通知
+    [Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] | Out-Null
+    $template = [Windows.UI.Notifications.ToastTemplateType]::ToastText01
+    $xml = [Windows.UI.Notifications.ToastNotificationManager]::GetTemplateContent($template)
+    $xml.GetElementsByTagName("text").Item(0).AppendChild($xml.CreateTextNode("AI Server stopped")) | Out-Null
+    $notifier = [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier("AI Server")
+    $notifier.Show([Windows.UI.Notifications.ToastNotification]::new($xml))
+} else {
+    # 停止中 → 起動
+    Start-Process powershell -ArgumentList "-ExecutionPolicy Bypass -File `"$INSTALL_DIR\start.ps1`"" -WindowStyle Hidden
+
+    # API起動待ち (最大30秒)
+    $ready = $false
+    for ($i = 0; $i -lt 30; $i++) {
+        Start-Sleep -Seconds 1
+        try {
+            $response = Invoke-WebRequest -Uri "http://localhost:$API_PORT/health" -UseBasicParsing -TimeoutSec 2 -ErrorAction Stop
+            $ready = $true
+            break
+        } catch { }
+    }
+
+    if ($ready) {
+        Start-Sleep -Seconds 1
+        Start-Process "http://localhost:$API_PORT"
+
+        # トースト通知
+        [Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] | Out-Null
+        $template = [Windows.UI.Notifications.ToastTemplateType]::ToastText01
+        $xml = [Windows.UI.Notifications.ToastNotificationManager]::GetTemplateContent($template)
+        $xml.GetElementsByTagName("text").Item(0).AppendChild($xml.CreateTextNode("AI Server is running")) | Out-Null
+        $notifier = [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier("AI Server")
+        $notifier.Show([Windows.UI.Notifications.ToastNotification]::new($xml))
+    } else {
+        [System.Windows.MessageBox]::Show("Failed to start. Check $INSTALL_DIR\logs\", "AI Server")
+    }
+}
+'@
+
+Set-Content -Path "$INSTALL_DIR\toggle.ps1" -Value $TOGGLE_SCRIPT -Encoding UTF8
+
+Write-Host ""
+Write-Host "╔═══════════════════════════════════════════════════════╗" -ForegroundColor Green
+Write-Host "║     AI Server のインストールが完了しました！          ║" -ForegroundColor Green
+Write-Host "╚═══════════════════════════════════════════════════════╝" -ForegroundColor Green
+Write-Host ""
+
+if ($MISSING_DEPS.Count -gt 0) {
+    Write-Warn "不足している依存関係: $($MISSING_DEPS -join ', ')"
+    Write-Host ""
+    Write-Host "  winget でインストール:"
+    if ($MISSING_DEPS -contains "nodejs") { Write-Host "    winget install OpenJS.NodeJS.LTS" }
+    if ($MISSING_DEPS -contains "postgresql") { Write-Host "    winget install PostgreSQL.PostgreSQL" }
+    if ($MISSING_DEPS -contains "ollama") { Write-Host "    winget install Ollama.Ollama" }
+    if ($MISSING_DEPS -contains "tesseract") { Write-Host "    Tesseract: https://github.com/UB-Mannheim/tesseract/wiki  # オプション: 画像OCR用" }
+    Write-Host ""
+}
+
+# Create lmlight.bat CLI
+$BAT_CONTENT = @"
+@echo off
+if "%1"=="start" powershell -ExecutionPolicy Bypass -File "%LOCALAPPDATA%\lmlight\start.ps1"
+if "%1"=="stop" powershell -ExecutionPolicy Bypass -File "%LOCALAPPDATA%\lmlight\stop.ps1"
+if "%1"=="" echo Usage: lmlight {start^|stop}
+"@
+Set-Content -Path "$INSTALL_DIR\lmlight.bat" -Value $BAT_CONTENT -Encoding ASCII
+
+# Add to PATH if not already present
+$UserPath = [Environment]::GetEnvironmentVariable("Path", "User")
+if ($UserPath -notlike "*$INSTALL_DIR*") {
+    [Environment]::SetEnvironmentVariable("Path", "$UserPath;$INSTALL_DIR", "User")
+    Write-Success "PATH に追加しました"
+}
+
+Write-Host ""
+Write-Warn "lmlight コマンドを使うには新しいターミナルを開いてください"
+Write-Host ""
+Write-Host "起動: lmlight start" -ForegroundColor Blue
+Write-Host "停止: lmlight stop" -ForegroundColor Blue
+Write-Host "  または" -ForegroundColor Gray
+Write-Host "起動: powershell -ExecutionPolicy Bypass -File `"$INSTALL_DIR\start.ps1`"" -ForegroundColor Blue
+Write-Host "停止: powershell -ExecutionPolicy Bypass -File `"$INSTALL_DIR\stop.ps1`"" -ForegroundColor Blue
+Write-Host ""
+Write-Host "URL:      http://localhost:8000" -ForegroundColor Blue
+Write-Host ""
+Write-Host "============================================================"
+Write-Host "  ライセンス設定"
+Write-Host "============================================================"
+Write-Host ""
+Write-Host "  ライセンスファイルを以下に配置してください:"
+Write-Host "    $INSTALL_DIR\license.lic"
+Write-Host ""
+Write-Host "  ライセンス購入: https://digital-base.co.jp/services/localllm/lmlight-purchase"
+Write-Host ""
