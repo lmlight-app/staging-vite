@@ -238,6 +238,28 @@ CREATE TABLE IF NOT EXISTS "Prompt" (
     "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS "HelpdeskRoom" (
+    "id" TEXT NOT NULL PRIMARY KEY,
+    "name" TEXT NOT NULL,
+    "description" TEXT,
+    "botId" TEXT,
+    "model" TEXT,
+    "modelParams" JSONB,
+    "ragParams" JSONB,
+    "systemPrompt" TEXT,
+    "aiPaused" BOOLEAN NOT NULL DEFAULT false,
+    "createdBy" TEXT NOT NULL,
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS "HelpdeskMember" (
+    "id" TEXT NOT NULL PRIMARY KEY,
+    "roomId" TEXT NOT NULL,
+    "userId" TEXT NOT NULL,
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
 DO $$ BEGIN
     ALTER TABLE "Bot" ADD COLUMN IF NOT EXISTS "url" TEXT;
 EXCEPTION WHEN undefined_table THEN null; WHEN duplicate_column THEN null; END $$;
@@ -325,6 +347,10 @@ CREATE INDEX IF NOT EXISTS "SavedSqlConnection_userId_idx" ON "SavedSqlConnectio
 CREATE INDEX IF NOT EXISTS "SavedSqlConnection_shareTagId_idx" ON "SavedSqlConnection"("shareTagId");
 CREATE INDEX IF NOT EXISTS "Prompt_userId_idx" ON "Prompt"("userId");
 CREATE INDEX IF NOT EXISTS "Prompt_shareTagId_idx" ON "Prompt"("shareTagId");
+CREATE INDEX IF NOT EXISTS "HelpdeskRoom_createdBy_idx" ON "HelpdeskRoom"("createdBy");
+CREATE INDEX IF NOT EXISTS "HelpdeskMember_roomId_idx" ON "HelpdeskMember"("roomId");
+CREATE INDEX IF NOT EXISTS "HelpdeskMember_userId_idx" ON "HelpdeskMember"("userId");
+CREATE UNIQUE INDEX IF NOT EXISTS "HelpdeskMember_roomId_userId_key" ON "HelpdeskMember"("roomId", "userId");
 CREATE INDEX IF NOT EXISTS idx_bot_user ON pgvector.embeddings (bot_id, user_id);
 CREATE INDEX IF NOT EXISTS idx_document ON pgvector.embeddings (document_id);
 CREATE INDEX IF NOT EXISTS idx_embeddings_hnsw ON pgvector.embeddings USING hnsw (embedding vector_cosine_ops);
