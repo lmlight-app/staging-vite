@@ -248,6 +248,7 @@ CREATE TABLE IF NOT EXISTS "HelpdeskRoom" (
     "ragParams" JSONB,
     "systemPrompt" TEXT,
     "aiPaused" BOOLEAN NOT NULL DEFAULT false,
+    "notificationWebhookUrl" TEXT,
     "createdBy" TEXT NOT NULL,
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -258,6 +259,14 @@ CREATE TABLE IF NOT EXISTS "HelpdeskMember" (
     "roomId" TEXT NOT NULL,
     "userId" TEXT NOT NULL,
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS "HelpdeskReadState" (
+    "id" TEXT NOT NULL PRIMARY KEY,
+    "roomId" TEXT NOT NULL,
+    "userId" TEXT NOT NULL,
+    "memberId" TEXT,
+    "lastReadAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
 DO $$ BEGIN
@@ -351,6 +360,9 @@ CREATE INDEX IF NOT EXISTS "HelpdeskRoom_createdBy_idx" ON "HelpdeskRoom"("creat
 CREATE INDEX IF NOT EXISTS "HelpdeskMember_roomId_idx" ON "HelpdeskMember"("roomId");
 CREATE INDEX IF NOT EXISTS "HelpdeskMember_userId_idx" ON "HelpdeskMember"("userId");
 CREATE UNIQUE INDEX IF NOT EXISTS "HelpdeskMember_roomId_userId_key" ON "HelpdeskMember"("roomId", "userId");
+CREATE INDEX IF NOT EXISTS "HelpdeskReadState_roomId_idx" ON "HelpdeskReadState"("roomId");
+CREATE INDEX IF NOT EXISTS "HelpdeskReadState_userId_idx" ON "HelpdeskReadState"("userId");
+CREATE UNIQUE INDEX IF NOT EXISTS "HelpdeskReadState_roomId_userId_key" ON "HelpdeskReadState"("roomId", "userId", "memberId");
 CREATE INDEX IF NOT EXISTS idx_bot_user ON pgvector.embeddings (bot_id, user_id);
 CREATE INDEX IF NOT EXISTS idx_document ON pgvector.embeddings (document_id);
 CREATE INDEX IF NOT EXISTS idx_embeddings_hnsw ON pgvector.embeddings USING hnsw (embedding vector_cosine_ops);
