@@ -274,6 +274,8 @@ CREATE TABLE IF NOT EXISTS "Pipeline" (
     "name" TEXT NOT NULL,
     "description" TEXT,
     "config" JSONB,
+    "shareType" TEXT NOT NULL DEFAULT 'PRIVATE',
+    "shareTagId" TEXT,
     "createdBy" TEXT NOT NULL,
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP
