@@ -5,7 +5,7 @@ $ErrorActionPreference = "Stop"
 
 # 設定
 $BASE_URL = if ($env:DB_BASE_URL) { $env:DB_BASE_URL } else { "https://github.com/lmlight-app/dist_vite/releases/latest/download" }
-$INSTALL_DIR = if ($env:DB_INSTALL_DIR) { $env:DB_INSTALL_DIR } else { "$env:LOCALAPPDATA\digitalbase" }
+$INSTALL_DIR = if ($env:DB_INSTALL_DIR) { $env:DB_INSTALL_DIR } else { "$env:LOCALAPPDATA\db" }
 $ARCH = "amd64"  # Windows は x64 のみサポート
 
 # データベース設定 (デフォルト値、.env があればそちらを優先)
@@ -54,7 +54,7 @@ if (Test-Path "$INSTALL_DIR\api.exe") {
 
     # 既存プロセス停止
     Write-Info "既存のプロセスを停止中..."
-    Get-Process -Name "api" -ErrorAction SilentlyContinue | Where-Object { $_.Path -like "*digitalbase*" } | Stop-Process -Force
+    Get-Process -Name "api" -ErrorAction SilentlyContinue | Where-Object { $_.Path -like "*db*" } | Stop-Process -Force
     Start-Sleep -Seconds 2
     Write-Success "既存のプロセスを停止しました"
 }
@@ -618,7 +618,7 @@ AUTH_MODE=local
 # 起動スクリプト作成
 $START_SCRIPT = @'
 # AI Server 起動スクリプト
-$INSTALL_DIR = "$env:LOCALAPPDATA\digitalbase"
+$INSTALL_DIR = "$env:LOCALAPPDATA\db"
 Set-Location $INSTALL_DIR
 
 # .env 読み込み
@@ -667,7 +667,7 @@ if (-not (Get-Process -Name "ollama" -ErrorAction SilentlyContinue)) {
 }
 
 # 既存プロセス終了
-Get-Process -Name "api" -ErrorAction SilentlyContinue | Where-Object { $_.Path -like "*digitalbase*" } | Stop-Process -Force
+Get-Process -Name "api" -ErrorAction SilentlyContinue | Where-Object { $_.Path -like "*db*" } | Stop-Process -Force
 Start-Sleep -Seconds 1
 
 if (-not $env:API_PORT) { $env:API_PORT = "8000" }
@@ -716,7 +716,7 @@ $STOP_SCRIPT = @'
 # AI Server 停止スクリプト
 Write-Host "AI Server を停止中..."
 
-Get-Process -Name "api" -ErrorAction SilentlyContinue | Where-Object { $_.Path -like "*digitalbase*" } | Stop-Process -Force
+Get-Process -Name "api" -ErrorAction SilentlyContinue | Where-Object { $_.Path -like "*db*" } | Stop-Process -Force
 
 Write-Host "AI Server を停止しました" -ForegroundColor Green
 '@
@@ -728,7 +728,7 @@ $TOGGLE_SCRIPT = @'
 # AI Server トグルスクリプト
 # 起動中ならStop、停止中ならStart
 
-$INSTALL_DIR = "$env:LOCALAPPDATA\digitalbase"
+$INSTALL_DIR = "$env:LOCALAPPDATA\db"
 Set-Location $INSTALL_DIR
 
 # .env 読み込み
@@ -811,8 +811,8 @@ if ($MISSING_DEPS.Count -gt 0) {
 # Create db.bat CLI
 $BAT_CONTENT = @"
 @echo off
-if "%1"=="start" powershell -ExecutionPolicy Bypass -File "%LOCALAPPDATA%\digitalbase\start.ps1"
-if "%1"=="stop" powershell -ExecutionPolicy Bypass -File "%LOCALAPPDATA%\digitalbase\stop.ps1"
+if "%1"=="start" powershell -ExecutionPolicy Bypass -File "%LOCALAPPDATA%\db\start.ps1"
+if "%1"=="stop" powershell -ExecutionPolicy Bypass -File "%LOCALAPPDATA%\db\stop.ps1"
 if "%1"=="" echo Usage: db {start^|stop}
 "@
 Set-Content -Path "$INSTALL_DIR\db.bat" -Value $BAT_CONTENT -Encoding ASCII

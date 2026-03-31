@@ -9,7 +9,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-$InstallDir = "$env:LOCALAPPDATA\lmlight"
+$InstallDir = "$env:LOCALAPPDATA\db"
 $ModelDir = "$InstallDir\models\whisper"
 $EnvFile = "$InstallDir\.env"
 

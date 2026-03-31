@@ -4,7 +4,7 @@
 set -e
 
 BASE_URL="${DB_BASE_URL:-https://github.com/lmlight-app/dist_vite/releases/latest/download}"
-INSTALL_DIR="${DB_INSTALL_DIR:-$HOME/.local/digitalbase}"
+INSTALL_DIR="${DB_INSTALL_DIR:-$HOME/.local/db}"
 ARCH="$(uname -m)"
 case "$ARCH" in x86_64|amd64) ARCH="amd64" ;; aarch64|arm64) ARCH="arm64" ;; esac
 
@@ -120,7 +120,7 @@ chmod +x "$INSTALL_DIR/start.sh"
 
 cat > "$INSTALL_DIR/stop.sh" << 'EOF'
 #!/bin/bash
-pkill -f "digitalbase/start\.sh" 2>/dev/null
+pkill -f "db/start\.sh" 2>/dev/null
 sleep 1
 pkill -f "\./api$" 2>/dev/null
 echo "Stopped"
@@ -130,7 +130,7 @@ chmod +x "$INSTALL_DIR/stop.sh"
 # Create db CLI script
 cat > "$INSTALL_DIR/db" << 'EOF'
 #!/bin/bash
-DB_HOME="${DB_HOME:-$HOME/.local/digitalbase}"
+DB_HOME="${DB_HOME:-$HOME/.local/db}"
 case "$1" in
     start) "$DB_HOME/start.sh" ;;
     stop)  "$DB_HOME/stop.sh" ;;

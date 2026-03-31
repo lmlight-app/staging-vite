@@ -9,7 +9,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-$InstallDir = "$env:LOCALAPPDATA\lmlight"
+$InstallDir = "$env:LOCALAPPDATA\db"
 $ModelDir = "$InstallDir\models\yolo"
 $EnvFile = "$InstallDir\.env"
 
