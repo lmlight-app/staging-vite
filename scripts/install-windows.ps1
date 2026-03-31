@@ -9,9 +9,9 @@ $INSTALL_DIR = if ($env:DB_INSTALL_DIR) { $env:DB_INSTALL_DIR } else { "$env:LOC
 $ARCH = "amd64"  # Windows は x64 のみサポート
 
 # データベース設定 (デフォルト値、.env があればそちらを優先)
-$DB_USER = "lmlight"
-$DB_PASSWORD = "lmlight"
-$DB_NAME = "lmlight"
+$DB_USER = "digitalbase"
+$DB_PASSWORD = "digitalbase"
+$DB_NAME = "digitalbase"
 
 # 既存 .env から DATABASE_URL を読み取り (アップデート時にカスタム設定を反映)
 if (Test-Path "$INSTALL_DIR\.env") {

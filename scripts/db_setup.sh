@@ -2,9 +2,9 @@
 # AI Server Database Setup for macOS/Linux
 set -e
 
-DB_USER="${DB_USER:-lmlight}"
-DB_PASS="${DB_PASS:-lmlight}"
-DB_NAME="${DB_NAME:-lmlight}"
+DB_USER="${DB_USER:-digitalbase}"
+DB_PASS="${DB_PASS:-digitalbase}"
+DB_NAME="${DB_NAME:-digitalbase}"
 
 echo "Setting up AI Server database..."
 
@@ -428,11 +428,11 @@ VALUES (
     CURRENT_TIMESTAMP
 ) ON CONFLICT ("id") DO NOTHING;
 
-GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO lmlight;
-GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO lmlight;
-GRANT ALL PRIVILEGES ON SCHEMA pgvector TO lmlight;
-GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA pgvector TO lmlight;
-GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA pgvector TO lmlight;
+GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO digitalbase;
+GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO digitalbase;
+GRANT ALL PRIVILEGES ON SCHEMA pgvector TO digitalbase;
+GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA pgvector TO digitalbase;
+GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA pgvector TO digitalbase;
 SQLEOF
 
 echo "✅ Database setup complete"

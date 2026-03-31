@@ -91,7 +91,7 @@ echo "✅ Python venv ready"
 VLLM_PYTHON=$INSTALL_DIR/venv/bin/python
 
 # PostgreSQL Database
-DATABASE_URL=postgresql://lmlight:lmlight@localhost:5432/lmlight
+DATABASE_URL=postgresql://digitalbase:digitalbase@localhost:5432/digitalbase
 
 # =============================================================================
 # vLLM Server URLs

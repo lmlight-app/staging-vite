@@ -25,7 +25,7 @@ chmod +x "$INSTALL_DIR/api"
 # =============================================================================
 
 # PostgreSQL Database
-DATABASE_URL=postgresql://lmlight:lmlight@localhost:5432/lmlight
+DATABASE_URL=postgresql://digitalbase:digitalbase@localhost:5432/digitalbase
 
 # Ollama LLM Server
 OLLAMA_BASE_URL=http://localhost:11434
