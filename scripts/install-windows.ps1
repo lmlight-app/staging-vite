@@ -525,6 +525,9 @@ EXCEPTION WHEN undefined_table THEN null; WHEN duplicate_column THEN null; END `
 DO `$`$ BEGIN
     ALTER TABLE "User" ADD COLUMN IF NOT EXISTS "authProvider" TEXT NOT NULL DEFAULT 'local';
 EXCEPTION WHEN undefined_table THEN null; WHEN duplicate_column THEN null; END `$`$;
+DO `$`$ BEGIN
+    ALTER TABLE "User" ADD COLUMN IF NOT EXISTS "ldapAttributes" JSONB;
+EXCEPTION WHEN undefined_table THEN null; WHEN duplicate_column THEN null; END `$`$;
 
 -- 管理者ユーザー (admin@local / admin123)
 INSERT INTO "User" ("id", "email", "name", "hashedPassword", "role", "status", "updatedAt")

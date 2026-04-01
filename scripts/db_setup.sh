@@ -354,6 +354,9 @@ EXCEPTION WHEN undefined_table THEN null; WHEN duplicate_column THEN null; END $
 DO $$ BEGIN
     ALTER TABLE "DefaultSetting" ADD COLUMN IF NOT EXISTS "sidebarItems" JSONB;
 EXCEPTION WHEN undefined_table THEN null; WHEN duplicate_column THEN null; END $$;
+DO $$ BEGIN
+    ALTER TABLE "User" ADD COLUMN IF NOT EXISTS "ldapAttributes" JSONB;
+EXCEPTION WHEN undefined_table THEN null; WHEN duplicate_column THEN null; END $$;
 
 -- Rename from UserSettings if upgrading
 DO $$ BEGIN

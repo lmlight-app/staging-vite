@@ -10,7 +10,7 @@ case "$ARCH" in x86_64|amd64) ARCH="amd64" ;; aarch64|arm64) ARCH="arm64" ;; esa
 
 echo "Installing AI Server Vite Edition ($ARCH) to $INSTALL_DIR"
 
-mkdir -p "$INSTALL_DIR"/logs
+mkdir -p "$INSTALL_DIR"
 
 [ -f "$INSTALL_DIR/stop.sh" ] && "$INSTALL_DIR/stop.sh" 2>/dev/null || true
 
