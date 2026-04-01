@@ -63,6 +63,22 @@ AUTH_MODE=local
 # OIDC_TENANT_ID=
 
 # =============================================================================
+# Cloud LLM Providers (optional — set API key to enable)
+# =============================================================================
+# OPENAI_API_KEY=
+# OPENAI_BASE_URL=https://api.openai.com/v1
+# ANTHROPIC_API_KEY=
+# GEMINI_API_KEY=
+
+# =============================================================================
+# Web Search (default OFF — set true to enable)
+# =============================================================================
+# WEB_SEARCH_ENABLED=false
+# WEB_SEARCH_ENGINE=duckduckgo
+# WEB_SEARCH_SEARXNG_URL=http://localhost:8888
+# WEB_SEARCH_MAX_RESULTS=3
+
+# =============================================================================
 # Whisper Transcription
 # Install model first: install-transcribe.sh [tiny|base|small|medium|large]
 # =============================================================================

@@ -228,6 +228,7 @@ CREATE TABLE IF NOT EXISTS "DefaultSetting" (
     "customTitle" TEXT DEFAULT 'LM LIGHT',
     "sidebarItems" JSONB,
     "sqlConnection" JSONB,
+    "toolSettings" JSONB,
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
@@ -611,6 +612,18 @@ AUTH_MODE=local
 # OIDC_CLIENT_ID=
 # OIDC_CLIENT_SECRET=
 # OIDC_TENANT_ID=
+
+# Cloud LLM Providers (optional)
+# OPENAI_API_KEY=
+# OPENAI_BASE_URL=https://api.openai.com/v1
+# ANTHROPIC_API_KEY=
+# GEMINI_API_KEY=
+
+# Web Search (default OFF)
+# WEB_SEARCH_ENABLED=false
+# WEB_SEARCH_ENGINE=duckduckgo
+# WEB_SEARCH_SEARXNG_URL=http://localhost:8888
+# WEB_SEARCH_MAX_RESULTS=3
 "@
     Set-Content -Path "$INSTALL_DIR\.env" -Value $ENV_CONTENT -Encoding UTF8
     Write-Success ".env ファイルを作成しました"

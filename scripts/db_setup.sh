@@ -79,6 +79,7 @@ CREATE TABLE IF NOT EXISTS "DefaultSetting" (
     "customTitle" TEXT DEFAULT 'LM LIGHT',
     "sidebarItems" JSONB,
     "sqlConnection" JSONB,
+    "toolSettings" JSONB,
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
@@ -353,6 +354,9 @@ DO $$ BEGIN
 EXCEPTION WHEN undefined_table THEN null; WHEN duplicate_column THEN null; END $$;
 DO $$ BEGIN
     ALTER TABLE "DefaultSetting" ADD COLUMN IF NOT EXISTS "sidebarItems" JSONB;
+EXCEPTION WHEN undefined_table THEN null; WHEN duplicate_column THEN null; END $$;
+DO $$ BEGIN
+    ALTER TABLE "DefaultSetting" ADD COLUMN IF NOT EXISTS "toolSettings" JSONB;
 EXCEPTION WHEN undefined_table THEN null; WHEN duplicate_column THEN null; END $$;
 DO $$ BEGIN
     ALTER TABLE "User" ADD COLUMN IF NOT EXISTS "ldapAttributes" JSONB;
