@@ -67,13 +67,13 @@ echo " CUDA $CUDA_MAJOR detected, installing vLLM..."
 if [ "$CUDA_MAJOR" -ge 13 ]; then
     # CUDA 13+: use vLLM CUDA 13 wheels
     uv pip install --python "$INSTALL_DIR/venv/bin/python" \
-        vllm==0.18.0 \
-        --extra-index-url "https://wheels.vllm.ai/0.18.0/cu${CUDA_MAJOR}0" \
+        vllm==0.18.1 \
+        --extra-index-url "https://wheels.vllm.ai/0.18.1/cu${CUDA_MAJOR}0" \
         --extra-index-url "https://download.pytorch.org/whl/cu${CUDA_MAJOR}0" \
         --index-strategy unsafe-best-match
 else
     # CUDA 12.x: standard install (compatible with CUDA 12.0-12.9)
-    uv pip install --python "$INSTALL_DIR/venv/bin/python" vllm==0.18.0
+    uv pip install --python "$INSTALL_DIR/venv/bin/python" vllm==0.18.1
 fi
 
 uv pip install --python "$INSTALL_DIR/venv/bin/python" "openai-whisper>=20231117"
@@ -179,6 +179,9 @@ AUTH_MODE=local
 # License Configuration
 # =============================================================================
 LICENSE_FILE_PATH=$INSTALL_DIR/license.lic
+
+# File Storage (pipeline uploads/outputs)
+FILES_DIR=$INSTALL_DIR/files
 EOF
 
 # Database setup - parse DATABASE_URL from .env if it exists (for updates with custom DB config)

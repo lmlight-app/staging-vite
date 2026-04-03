@@ -33,6 +33,9 @@ OLLAMA_BASE_URL=http://localhost:11434
 # License
 LICENSE_FILE_PATH=$INSTALL_DIR/license.lic
 
+# File Storage (pipeline uploads/outputs)
+FILES_DIR=$INSTALL_DIR/files
+
 # =============================================================================
 # Server Configuration (API + Web on single port)
 # =============================================================================
