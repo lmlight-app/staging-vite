@@ -15,7 +15,7 @@ $DB_NAME = "digitalbase"
 
 # 既存 .env から DATABASE_URL を読み取り (アップデート時にカスタム設定を反映)
 if (Test-Path "$INSTALL_DIR\.env") {
-    $dbUrlLine = Get-Content "$INSTALL_DIR\.env" | Where-　　Object { $_ -match "^DATABASE_URL=" } | Select-Object -First 1
+    $dbUrlLine = Get-Content "$INSTALL_DIR\.env" | Where-Object { $_ -match "^DATABASE_URL=" } | Select-Object -First 1
     if ($dbUrlLine -match "^DATABASE_URL=postgresql://([^:]+):([^@]+)@[^/]+/([^?]+)") {
         $DB_USER = $matches[1]
         $DB_PASSWORD = $matches[2]
