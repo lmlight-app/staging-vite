@@ -62,7 +62,7 @@ if (Test-Path "$INSTALL_DIR\api.exe") {
 # ============================================================
 # ステップ 1: バイナリダウンロード
 # ============================================================
-Write-Info "ステップ 1/4: バイナリをダウンロード中..."
+Write-Info "ステップ 1/5: バイナリをダウンロード中..."
 
 Write-Info "バイナリをダウンロード中..."
 $BACKEND_FILE = "lmlight-vite-windows-$ARCH.exe"
@@ -72,7 +72,7 @@ Write-Success "バイナリをダウンロードしました"
 # ============================================================
 # ステップ 2: 依存関係チェック
 # ============================================================
-Write-Info "ステップ 2/4: 依存関係をチェック中..."
+Write-Info "ステップ 2/5: 依存関係をチェック中..."
 
 $MISSING_DEPS = @()
 
@@ -130,7 +130,7 @@ if ($MISSING_DEPS.Count -gt 0 -and $isAdmin) {
 # ============================================================
 # ステップ 3: PostgreSQL セットアップ
 # ============================================================
-Write-Info "ステップ 3/4: PostgreSQL をセットアップ中..."
+Write-Info "ステップ 3/5: PostgreSQL をセットアップ中..."
 
 # PostgreSQL ポート検出
 $DB_PORT = "5432"
@@ -561,7 +561,7 @@ GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA pgvector TO $DB_USER;
 # ============================================================
 # ステップ 4: Ollama セットアップ
 # ============================================================
-Write-Info "ステップ 4/4: Ollama をセットアップ中..."
+Write-Info "ステップ 4/5: Ollama をセットアップ中..."
 
 if (Get-Command ollama -ErrorAction SilentlyContinue) {
     # Ollama が起動していない場合は起動
@@ -720,11 +720,10 @@ $null = Register-EngineEvent -SourceIdentifier PowerShell.Exiting -Action {
 
 try {
     # プロセス終了まで待機
-    Wait-Process -Id $apiProcess.Id, $appProcess.Id -ErrorAction SilentlyContinue
+    Wait-Process -Id $apiProcess.Id -ErrorAction SilentlyContinue
 } finally {
     Write-Host "Stopped"
     Stop-Process -Id $apiProcess.Id -Force -ErrorAction SilentlyContinue
-    Stop-Process -Id $appProcess.Id -Force -ErrorAction SilentlyContinue
 }
 '@
 
