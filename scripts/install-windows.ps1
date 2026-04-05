@@ -15,7 +15,7 @@ $DB_NAME = "digitalbase"
 
 # 既存 .env から DATABASE_URL を読み取り (アップデート時にカスタム設定を反映)
 if (Test-Path "$INSTALL_DIR\.env") {
-    $dbUrlLine = Get-Content "$INSTALL_DIR\.env" | Where-Object { $_ -match "^DATABASE_URL=" } | Select-Object -First 1
+    $dbUrlLine = Get-Content "$INSTALL_DIR\.env" | Where-　　Object { $_ -match "^DATABASE_URL=" } | Select-Object -First 1
     if ($dbUrlLine -match "^DATABASE_URL=postgresql://([^:]+):([^@]+)@[^/]+/([^?]+)") {
         $DB_USER = $matches[1]
         $DB_PASSWORD = $matches[2]
@@ -876,11 +876,9 @@ Set-Content -Path "$INSTALL_DIR\db.bat" -Value $BAT_CONTENT -Encoding ASCII
 $UserPath = [Environment]::GetEnvironmentVariable("Path", "User")
 if ($UserPath -notlike "*$INSTALL_DIR*") {
     [Environment]::SetEnvironmentVariable("Path", "$UserPath;$INSTALL_DIR", "User")
+    $env:Path = "$env:Path;$INSTALL_DIR"
     Write-Success "PATH に追加しました"
 }
-
-Write-Host ""
-Write-Warn "db コマンドを使うには新しいターミナルを開いてください"
 Write-Host ""
 Write-Host "起動: db start" -ForegroundColor Blue
 Write-Host "停止: db stop" -ForegroundColor Blue
