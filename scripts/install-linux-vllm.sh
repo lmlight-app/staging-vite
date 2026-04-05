@@ -110,8 +110,8 @@ VLLM_EMBED_BASE_URL=http://localhost:8081
 VLLM_AUTO_START=true
 
 # Models (HuggingFace model IDs)
-VLLM_CHAT_MODEL=Qwen/Qwen2.5-1.5B-Instruct
-VLLM_EMBED_MODEL=intfloat/multilingual-e5-large-instruct
+VLLM_CHAT_MODEL=Qwen/Qwen3.5-35B-A3B
+VLLM_EMBED_MODEL=Qwen/Qwen3-Embedding-0.6B
 # Optional: Separate vision model (requires VLLM_VISION_BASE_URL)
 # VLLM_VISION_MODEL=Qwen/Qwen2.5-VL-7B-Instruct
 
