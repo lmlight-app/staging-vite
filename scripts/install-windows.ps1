@@ -581,6 +581,7 @@ Write-Info "ステップ 5/5: 設定を作成中..."
 
 # .env ファイル作成 (存在しない場合のみ)
 if (-not (Test-Path "$INSTALL_DIR\.env")) {
+    $JWT_SECRET = -join ((48..57) + (97..122) | Get-Random -Count 64 | ForEach-Object { [char]$_ })
     $ENV_CONTENT = @"
 # AI Server Configuration
 DATABASE_URL=postgresql://${DB_USER}:${DB_PASSWORD}@localhost:${DB_PORT}/${DB_NAME}
@@ -596,7 +597,7 @@ API_HOST=0.0.0.0
 API_PORT=8000
 
 # Authentication
-JWT_SECRET=$(-join ((48..57) + (97..122) | Get-Random -Count 64 | ForEach-Object { [char]`$_ }))
+JWT_SECRET=$JWT_SECRET
 AUTH_MODE=local
 
 # Whisper Transcription
