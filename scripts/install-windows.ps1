@@ -4,7 +4,7 @@
 $ErrorActionPreference = "Stop"
 
 # 設定
-$BASE_URL = if ($env:DB_BASE_URL) { $env:DB_BASE_URL } else { "https://github.com/lmlight-app/dist_vite/releases/latest/download" }
+$BASE_URL = if ($env:DB_BASE_URL) { $env:DB_BASE_URL } else { "https://pub-a2cab4360f1748cab5ae1c0f12cddc0a.r2.dev/vite-latest" }
 $INSTALL_DIR = if ($env:DB_INSTALL_DIR) { $env:DB_INSTALL_DIR } else { "$env:LOCALAPPDATA\db" }
 $ARCH = "amd64"  # Windows は x64 のみサポート
 
@@ -64,8 +64,8 @@ if (Test-Path "$INSTALL_DIR\api.exe") {
 # ============================================================
 Write-Info "ステップ 1/5: バイナリをダウンロード中..."
 
-Write-Info "バイナリをダウンロード中..."
 $BACKEND_FILE = "lmlight-vite-windows-$ARCH.exe"
+Write-Info "バイナリをダウンロード中... ($BACKEND_FILE)"
 Invoke-WebRequest -Uri "$BASE_URL/$BACKEND_FILE" -OutFile "$INSTALL_DIR\api.exe" -UseBasicParsing
 Write-Success "バイナリをダウンロードしました"
 
@@ -163,7 +163,54 @@ if (Get-Command psql -ErrorAction SilentlyContinue) {
     $null = psql -U postgres -p $DB_PORT -c "CREATE DATABASE $DB_NAME OWNER $DB_USER;" 2>$null
     $null = psql -U postgres -p $DB_PORT -c "ALTER USER $DB_USER CREATEDB;" 2>$null
 
-    # pgvector拡張
+    # pgvector拡張 - 自動インストール
+    # PostgreSQL インストールパスを検出
+    $PG_DIR = $null
+    $pgVersions = @("17", "16", "15", "14")
+    foreach ($v in $pgVersions) {
+        $candidate = "C:\Program Files\PostgreSQL\$v"
+        if (Test-Path "$candidate\bin\psql.exe") {
+            $PG_DIR = $candidate
+            break
+        }
+    }
+
+    # vector.dll が未配置なら自動ダウンロード
+    if ($PG_DIR -and -not (Test-Path "$PG_DIR\lib\vector.dll")) {
+        Write-Info "pgvector をインストール中..."
+        $pgMajor = (Split-Path $PG_DIR -Leaf)
+        $pgvectorUrl = "https://github.com/andreiramani/pgvector_pgsql_windows/releases/latest/download/pgvector_pg${pgMajor}_x64.zip"
+        $pgvectorZip = "$env:TEMP\pgvector.zip"
+        $pgvectorExtract = "$env:TEMP\pgvector_extract"
+
+        try {
+            Invoke-WebRequest -Uri $pgvectorUrl -OutFile $pgvectorZip -UseBasicParsing
+            if (Test-Path $pgvectorExtract) { Remove-Item -Recurse -Force $pgvectorExtract }
+            Expand-Archive -Path $pgvectorZip -DestinationPath $pgvectorExtract -Force
+
+            # DLL とコントロールファイルを配置
+            Get-ChildItem -Path $pgvectorExtract -Recurse -Filter "vector.dll" | ForEach-Object {
+                Copy-Item $_.FullName "$PG_DIR\lib\vector.dll" -Force
+            }
+            Get-ChildItem -Path $pgvectorExtract -Recurse -Filter "vector.control" | ForEach-Object {
+                Copy-Item $_.FullName "$PG_DIR\share\extension\vector.control" -Force
+            }
+            Get-ChildItem -Path $pgvectorExtract -Recurse -Filter "vector--*.sql" | ForEach-Object {
+                Copy-Item $_.FullName "$PG_DIR\share\extension\$($_.Name)" -Force
+            }
+
+            # クリーンアップ
+            Remove-Item -Force $pgvectorZip -ErrorAction SilentlyContinue
+            Remove-Item -Recurse -Force $pgvectorExtract -ErrorAction SilentlyContinue
+
+            Write-Success "pgvector をインストールしました"
+        } catch {
+            Write-Warn "pgvector の自動インストールに失敗しました。手動インストールが必要です: https://github.com/pgvector/pgvector#windows"
+        }
+    } elseif ($PG_DIR) {
+        Write-Success "pgvector は既にインストール済みです"
+    }
+
     $null = psql -U postgres -p $DB_PORT -d $DB_NAME -c "CREATE EXTENSION IF NOT EXISTS vector;" 2>$null
 
     $ErrorActionPreference = "Stop"
@@ -463,6 +510,36 @@ CREATE TABLE IF NOT EXISTS "PipelineSchedule" (
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
+-- Observability tables (structured logs)
+CREATE TABLE IF NOT EXISTS "AppLog" (
+    "id" SERIAL PRIMARY KEY,
+    "timestamp" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "level" VARCHAR(10) NOT NULL,
+    "logger" VARCHAR(255),
+    "message" TEXT NOT NULL,
+    "module" VARCHAR(255),
+    "func" VARCHAR(255),
+    "line" INTEGER,
+    "userId" VARCHAR(255),
+    "requestId" VARCHAR(64),
+    "extra" JSONB
+);
+
+CREATE TABLE IF NOT EXISTS "AuditLog" (
+    "id" SERIAL PRIMARY KEY,
+    "timestamp" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "userId" VARCHAR(255),
+    "action" VARCHAR(20) NOT NULL,
+    "resourceType" VARCHAR(50),
+    "resourceId" VARCHAR(255),
+    "method" VARCHAR(10) NOT NULL,
+    "path" TEXT NOT NULL,
+    "statusCode" INTEGER,
+    "ipAddress" VARCHAR(64),
+    "userAgent" TEXT,
+    "payload" JSONB
+);
+
 -- pgvector schema
 CREATE SCHEMA IF NOT EXISTS pgvector;
 CREATE TABLE IF NOT EXISTS pgvector.embeddings (
@@ -475,6 +552,24 @@ CREATE TABLE IF NOT EXISTS pgvector.embeddings (
     embedding vector,
     metadata JSONB,
     created_at TIMESTAMP DEFAULT NOW()
+);
+
+-- Data Lake schema (pipeline-collected structured datasets)
+CREATE SCHEMA IF NOT EXISTS datalake;
+CREATE TABLE IF NOT EXISTS datalake.datasets (
+    "id" VARCHAR(255) PRIMARY KEY,
+    "name" VARCHAR(255) NOT NULL,
+    "description" TEXT,
+    "ownerId" VARCHAR(255) NOT NULL,
+    "shareType" "ShareType" NOT NULL DEFAULT 'PRIVATE',
+    "shareTagId" VARCHAR(255),
+    "physicalTable" VARCHAR(63) NOT NULL UNIQUE,
+    "columns" JSONB NOT NULL,
+    "rowCount" INTEGER NOT NULL DEFAULT 0,
+    "sizeBytes" INTEGER NOT NULL DEFAULT 0,
+    "sourcePipelineId" VARCHAR(255),
+    "lastUpdatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
 -- インデックス
@@ -516,6 +611,19 @@ CREATE INDEX IF NOT EXISTS "PipelineSchedule_pipelineId_idx" ON "PipelineSchedul
 CREATE INDEX IF NOT EXISTS idx_bot_user ON pgvector.embeddings (bot_id, user_id);
 CREATE INDEX IF NOT EXISTS idx_document ON pgvector.embeddings (document_id);
 CREATE INDEX IF NOT EXISTS idx_embeddings_hnsw ON pgvector.embeddings USING hnsw (embedding vector_cosine_ops);
+
+-- Observability indexes
+CREATE INDEX IF NOT EXISTS "AppLog_timestamp_idx" ON "AppLog"("timestamp");
+CREATE INDEX IF NOT EXISTS "AppLog_level_timestamp_idx" ON "AppLog"("level", "timestamp");
+CREATE INDEX IF NOT EXISTS "AppLog_userId_idx" ON "AppLog"("userId");
+CREATE INDEX IF NOT EXISTS "AuditLog_timestamp_idx" ON "AuditLog"("timestamp");
+CREATE INDEX IF NOT EXISTS "AuditLog_userId_timestamp_idx" ON "AuditLog"("userId", "timestamp");
+CREATE INDEX IF NOT EXISTS "AuditLog_resourceType_idx" ON "AuditLog"("resourceType");
+
+-- Data Lake indexes
+CREATE UNIQUE INDEX IF NOT EXISTS "datasets_owner_name_key" ON datalake.datasets("ownerId", "name");
+CREATE INDEX IF NOT EXISTS "datasets_owner_idx" ON datalake.datasets("ownerId");
+CREATE INDEX IF NOT EXISTS "datasets_share_tag_idx" ON datalake.datasets("shareTagId") WHERE "shareType" = 'TAG';
 
 -- Bot columns (upgrade)
 DO `$`$ BEGIN
@@ -566,6 +674,36 @@ DO `$`$ BEGIN
     ALTER TABLE "DefaultSetting" ADD COLUMN IF NOT EXISTS "toolSettings" JSONB;
 EXCEPTION WHEN undefined_table THEN null; WHEN duplicate_column THEN null; END `$`$;
 
+-- SQL dialect abstraction was removed. Drop the column if it exists from an
+-- older install and restore NOT NULL on the credential columns.
+DO `$`$ BEGIN
+    ALTER TABLE "SavedSqlConnection" DROP COLUMN IF EXISTS "dialect";
+EXCEPTION WHEN undefined_table THEN null; END `$`$;
+DO `$`$ BEGIN UPDATE "SavedSqlConnection" SET "host" = COALESCE("host", 'localhost') WHERE "host" IS NULL;
+EXCEPTION WHEN undefined_table THEN null; END `$`$;
+DO `$`$ BEGIN UPDATE "SavedSqlConnection" SET "port" = COALESCE("port", 5432) WHERE "port" IS NULL;
+EXCEPTION WHEN undefined_table THEN null; END `$`$;
+DO `$`$ BEGIN UPDATE "SavedSqlConnection" SET "dbUser" = COALESCE("dbUser", '') WHERE "dbUser" IS NULL;
+EXCEPTION WHEN undefined_table THEN null; END `$`$;
+DO `$`$ BEGIN UPDATE "SavedSqlConnection" SET "password" = COALESCE("password", '') WHERE "password" IS NULL;
+EXCEPTION WHEN undefined_table THEN null; END `$`$;
+DO `$`$ BEGIN ALTER TABLE "SavedSqlConnection" ALTER COLUMN "host" SET NOT NULL;
+EXCEPTION WHEN undefined_table THEN null; END `$`$;
+DO `$`$ BEGIN ALTER TABLE "SavedSqlConnection" ALTER COLUMN "port" SET NOT NULL;
+EXCEPTION WHEN undefined_table THEN null; END `$`$;
+DO `$`$ BEGIN ALTER TABLE "SavedSqlConnection" ALTER COLUMN "dbUser" SET NOT NULL;
+EXCEPTION WHEN undefined_table THEN null; END `$`$;
+DO `$`$ BEGIN ALTER TABLE "SavedSqlConnection" ALTER COLUMN "password" SET NOT NULL;
+EXCEPTION WHEN undefined_table THEN null; END `$`$;
+
+-- Toolable Pipeline (Action) — removed in role-A cleanup (drop if upgrading from an older install)
+DO `$`$ BEGIN ALTER TABLE "Pipeline" DROP COLUMN IF EXISTS "exposeAsTool";
+EXCEPTION WHEN undefined_table THEN null; END `$`$;
+DO `$`$ BEGIN ALTER TABLE "Pipeline" DROP COLUMN IF EXISTS "toolHint";
+EXCEPTION WHEN undefined_table THEN null; END `$`$;
+DO `$`$ BEGIN ALTER TABLE "Pipeline" DROP COLUMN IF EXISTS "toolMode";
+EXCEPTION WHEN undefined_table THEN null; END `$`$;
+
 -- 管理者ユーザー (admin@local / admin123)
 INSERT INTO "User" ("id", "email", "name", "hashedPassword", "role", "status", "updatedAt")
 VALUES (
@@ -584,6 +722,9 @@ GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO $DB_USER;
 GRANT ALL PRIVILEGES ON SCHEMA pgvector TO $DB_USER;
 GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA pgvector TO $DB_USER;
 GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA pgvector TO $DB_USER;
+GRANT ALL PRIVILEGES ON SCHEMA datalake TO $DB_USER;
+GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA datalake TO $DB_USER;
+GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA datalake TO $DB_USER;
 "@
 
     $ErrorActionPreference = "Continue"

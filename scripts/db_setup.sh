@@ -369,6 +369,55 @@ DO $$ BEGIN
     END IF;
 END $$;
 
+-- SQL dialect abstraction was removed. Drop the column if it exists from an
+-- older install and restore NOT NULL on the credential columns.
+DO $$ BEGIN
+    ALTER TABLE "SavedSqlConnection" DROP COLUMN IF EXISTS "dialect";
+EXCEPTION WHEN undefined_table THEN null; END $$;
+DO $$ BEGIN UPDATE "SavedSqlConnection" SET "host" = COALESCE("host", 'localhost') WHERE "host" IS NULL; EXCEPTION WHEN undefined_table THEN null; END $$;
+DO $$ BEGIN UPDATE "SavedSqlConnection" SET "port" = COALESCE("port", 5432) WHERE "port" IS NULL; EXCEPTION WHEN undefined_table THEN null; END $$;
+DO $$ BEGIN UPDATE "SavedSqlConnection" SET "dbUser" = COALESCE("dbUser", '') WHERE "dbUser" IS NULL; EXCEPTION WHEN undefined_table THEN null; END $$;
+DO $$ BEGIN UPDATE "SavedSqlConnection" SET "password" = COALESCE("password", '') WHERE "password" IS NULL; EXCEPTION WHEN undefined_table THEN null; END $$;
+DO $$ BEGIN ALTER TABLE "SavedSqlConnection" ALTER COLUMN "host" SET NOT NULL; EXCEPTION WHEN undefined_table THEN null; END $$;
+DO $$ BEGIN ALTER TABLE "SavedSqlConnection" ALTER COLUMN "port" SET NOT NULL; EXCEPTION WHEN undefined_table THEN null; END $$;
+DO $$ BEGIN ALTER TABLE "SavedSqlConnection" ALTER COLUMN "dbUser" SET NOT NULL; EXCEPTION WHEN undefined_table THEN null; END $$;
+DO $$ BEGIN ALTER TABLE "SavedSqlConnection" ALTER COLUMN "password" SET NOT NULL; EXCEPTION WHEN undefined_table THEN null; END $$;
+
+-- Toolable Pipeline (Action) — removed in role-A cleanup (drop if upgrading from an older install)
+DO $$ BEGIN ALTER TABLE "Pipeline" DROP COLUMN IF EXISTS "exposeAsTool"; EXCEPTION WHEN undefined_table THEN null; END $$;
+DO $$ BEGIN ALTER TABLE "Pipeline" DROP COLUMN IF EXISTS "toolHint";    EXCEPTION WHEN undefined_table THEN null; END $$;
+DO $$ BEGIN ALTER TABLE "Pipeline" DROP COLUMN IF EXISTS "toolMode";    EXCEPTION WHEN undefined_table THEN null; END $$;
+
+-- Observability tables (structured logs)
+CREATE TABLE IF NOT EXISTS "AppLog" (
+    "id" SERIAL PRIMARY KEY,
+    "timestamp" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "level" VARCHAR(10) NOT NULL,
+    "logger" VARCHAR(255),
+    "message" TEXT NOT NULL,
+    "module" VARCHAR(255),
+    "func" VARCHAR(255),
+    "line" INTEGER,
+    "userId" VARCHAR(255),
+    "requestId" VARCHAR(64),
+    "extra" JSONB
+);
+
+CREATE TABLE IF NOT EXISTS "AuditLog" (
+    "id" SERIAL PRIMARY KEY,
+    "timestamp" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "userId" VARCHAR(255),
+    "action" VARCHAR(20) NOT NULL,
+    "resourceType" VARCHAR(50),
+    "resourceId" VARCHAR(255),
+    "method" VARCHAR(10) NOT NULL,
+    "path" TEXT NOT NULL,
+    "statusCode" INTEGER,
+    "ipAddress" VARCHAR(64),
+    "userAgent" TEXT,
+    "payload" JSONB
+);
+
 -- pgvector schema
 CREATE SCHEMA IF NOT EXISTS pgvector;
 CREATE TABLE IF NOT EXISTS pgvector.embeddings (
@@ -381,6 +430,24 @@ CREATE TABLE IF NOT EXISTS pgvector.embeddings (
     embedding vector,
     metadata JSONB,
     created_at TIMESTAMP DEFAULT NOW()
+);
+
+-- Data Lake schema (pipeline-collected structured datasets)
+CREATE SCHEMA IF NOT EXISTS datalake;
+CREATE TABLE IF NOT EXISTS datalake.datasets (
+    "id" VARCHAR(255) PRIMARY KEY,
+    "name" VARCHAR(255) NOT NULL,
+    "description" TEXT,
+    "ownerId" VARCHAR(255) NOT NULL,
+    "shareType" "ShareType" NOT NULL DEFAULT 'PRIVATE',
+    "shareTagId" VARCHAR(255),
+    "physicalTable" VARCHAR(63) NOT NULL UNIQUE,
+    "columns" JSONB NOT NULL,
+    "rowCount" INTEGER NOT NULL DEFAULT 0,
+    "sizeBytes" INTEGER NOT NULL DEFAULT 0,
+    "sourcePipelineId" VARCHAR(255),
+    "lastUpdatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
 -- Indexes
@@ -423,6 +490,19 @@ CREATE INDEX IF NOT EXISTS idx_bot_user ON pgvector.embeddings (bot_id, user_id)
 CREATE INDEX IF NOT EXISTS idx_document ON pgvector.embeddings (document_id);
 CREATE INDEX IF NOT EXISTS idx_embeddings_hnsw ON pgvector.embeddings USING hnsw (embedding vector_cosine_ops);
 
+-- Observability indexes
+CREATE INDEX IF NOT EXISTS "AppLog_timestamp_idx" ON "AppLog"("timestamp");
+CREATE INDEX IF NOT EXISTS "AppLog_level_timestamp_idx" ON "AppLog"("level", "timestamp");
+CREATE INDEX IF NOT EXISTS "AppLog_userId_idx" ON "AppLog"("userId");
+CREATE INDEX IF NOT EXISTS "AuditLog_timestamp_idx" ON "AuditLog"("timestamp");
+CREATE INDEX IF NOT EXISTS "AuditLog_userId_timestamp_idx" ON "AuditLog"("userId", "timestamp");
+CREATE INDEX IF NOT EXISTS "AuditLog_resourceType_idx" ON "AuditLog"("resourceType");
+
+-- Data Lake indexes
+CREATE UNIQUE INDEX IF NOT EXISTS "datasets_owner_name_key" ON datalake.datasets("ownerId", "name");
+CREATE INDEX IF NOT EXISTS "datasets_owner_idx" ON datalake.datasets("ownerId");
+CREATE INDEX IF NOT EXISTS "datasets_share_tag_idx" ON datalake.datasets("shareTagId") WHERE "shareType" = 'TAG';
+
 -- Admin user (admin@local / admin123)
 INSERT INTO "User" ("id", "email", "name", "hashedPassword", "role", "status", "updatedAt")
 VALUES (
@@ -440,6 +520,9 @@ GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO digitalbase;
 GRANT ALL PRIVILEGES ON SCHEMA pgvector TO digitalbase;
 GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA pgvector TO digitalbase;
 GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA pgvector TO digitalbase;
+GRANT ALL PRIVILEGES ON SCHEMA datalake TO digitalbase;
+GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA datalake TO digitalbase;
+GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA datalake TO digitalbase;
 SQLEOF
 
 echo "✅ Database setup complete"
