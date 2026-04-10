@@ -4,7 +4,7 @@
 $ErrorActionPreference = "Stop"
 
 # 設定
-$BASE_URL = if ($env:DB_BASE_URL) { $env:DB_BASE_URL } else { "https://pub-a2cab4360f1748cab5ae1c0f12cddc0a.r2.dev/vite-latest" }
+$BASE_URL = if ($env:DB_BASE_URL) { $env:DB_BASE_URL } else { "https://github.com/lmlight-app/dist_vite/releases/latest/download" }
 $INSTALL_DIR = if ($env:DB_INSTALL_DIR) { $env:DB_INSTALL_DIR } else { "$env:LOCALAPPDATA\db" }
 $ARCH = "amd64"  # Windows は x64 のみサポート
 
