@@ -221,6 +221,7 @@ CREATE TABLE IF NOT EXISTS "SavedSqlConnection" (
     "database" TEXT NOT NULL,
     "dbUser" TEXT NOT NULL,
     "password" TEXT NOT NULL,
+    "schema" TEXT NOT NULL DEFAULT 'public',
     "userId" TEXT NOT NULL,
     "shareType" "ShareType" NOT NULL DEFAULT 'PRIVATE',
     "shareTagId" TEXT,
@@ -382,6 +383,8 @@ DO $$ BEGIN ALTER TABLE "SavedSqlConnection" ALTER COLUMN "host" SET NOT NULL; E
 DO $$ BEGIN ALTER TABLE "SavedSqlConnection" ALTER COLUMN "port" SET NOT NULL; EXCEPTION WHEN undefined_table THEN null; END $$;
 DO $$ BEGIN ALTER TABLE "SavedSqlConnection" ALTER COLUMN "dbUser" SET NOT NULL; EXCEPTION WHEN undefined_table THEN null; END $$;
 DO $$ BEGIN ALTER TABLE "SavedSqlConnection" ALTER COLUMN "password" SET NOT NULL; EXCEPTION WHEN undefined_table THEN null; END $$;
+-- PostgreSQL schema selection (previously always hard-coded to 'public').
+DO $$ BEGIN ALTER TABLE "SavedSqlConnection" ADD COLUMN IF NOT EXISTS "schema" TEXT NOT NULL DEFAULT 'public'; EXCEPTION WHEN undefined_table THEN null; END $$;
 
 -- Toolable Pipeline (Action) — removed in role-A cleanup (drop if upgrading from an older install)
 DO $$ BEGIN ALTER TABLE "Pipeline" DROP COLUMN IF EXISTS "exposeAsTool"; EXCEPTION WHEN undefined_table THEN null; END $$;
