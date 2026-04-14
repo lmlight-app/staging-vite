@@ -271,6 +271,18 @@ CREATE TABLE IF NOT EXISTS "HelpdeskReadState" (
     "lastReadAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS "ApiConnection" (
+    "id" VARCHAR(255) NOT NULL PRIMARY KEY,
+    "name" VARCHAR(255) NOT NULL,
+    "type" VARCHAR(50) NOT NULL,
+    "config" JSONB NOT NULL,
+    "shareType" "ShareType" NOT NULL DEFAULT 'PRIVATE',
+    "shareTagId" VARCHAR(255),
+    "createdBy" VARCHAR(255) NOT NULL,
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE TABLE IF NOT EXISTS "Pipeline" (
     "id" TEXT NOT NULL PRIMARY KEY,
     "name" TEXT NOT NULL,
@@ -484,6 +496,9 @@ CREATE UNIQUE INDEX IF NOT EXISTS "HelpdeskMember_roomId_userId_key" ON "Helpdes
 CREATE INDEX IF NOT EXISTS "HelpdeskReadState_roomId_idx" ON "HelpdeskReadState"("roomId");
 CREATE INDEX IF NOT EXISTS "HelpdeskReadState_userId_idx" ON "HelpdeskReadState"("userId");
 CREATE UNIQUE INDEX IF NOT EXISTS "HelpdeskReadState_roomId_userId_key" ON "HelpdeskReadState"("roomId", "userId", "memberId");
+CREATE INDEX IF NOT EXISTS "ApiConnection_createdBy_idx" ON "ApiConnection"("createdBy");
+CREATE INDEX IF NOT EXISTS "ApiConnection_type_idx" ON "ApiConnection"("type");
+CREATE INDEX IF NOT EXISTS "ApiConnection_shareTagId_idx" ON "ApiConnection"("shareTagId");
 CREATE INDEX IF NOT EXISTS "Pipeline_createdBy_idx" ON "Pipeline"("createdBy");
 CREATE INDEX IF NOT EXISTS "PipelineStep_pipelineId_idx" ON "PipelineStep"("pipelineId");
 CREATE INDEX IF NOT EXISTS "PipelineRun_pipelineId_idx" ON "PipelineRun"("pipelineId");
