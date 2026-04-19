@@ -25,7 +25,15 @@ echo "Creating user and database..."
 $PSQL_ADMIN -c "CREATE USER $DB_USER WITH PASSWORD '$DB_PASS';" 2>/dev/null || true
 $PSQL_ADMIN -c "CREATE DATABASE $DB_NAME OWNER $DB_USER;" 2>/dev/null || true
 $PSQL_ADMIN -c "ALTER USER $DB_USER CREATEDB;" 2>/dev/null || true
-$PSQL_ADMIN -d $DB_NAME -c "CREATE EXTENSION IF NOT EXISTS vector;" 2>/dev/null || true
+if ! $PSQL_ADMIN -d $DB_NAME -c "CREATE EXTENSION IF NOT EXISTS vector;" >/dev/null 2>&1; then
+    echo "⚠️  pgvector 拡張の有効化に失敗しました。RAG 機能を利用する場合は pgvector を導入してください:" >&2
+    if [[ "$OSTYPE" == "darwin"* ]]; then
+        echo "   brew install pgvector" >&2
+    else
+        echo "   sudo apt install postgresql-\$(psql -V | grep -oE '[0-9]+' | head -1)-pgvector" >&2
+        echo "   (RHEL/CentOS): sudo dnf install pgvector" >&2
+    fi
+fi
 
 # Run migrations
 echo "Creating tables..."
