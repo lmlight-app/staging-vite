@@ -3,6 +3,9 @@
 
 $ErrorActionPreference = "Stop"
 
+# TLS 1.2 フォールバック (Windows PowerShell 5.1 は既定で TLS 1.0/1.1。aka.ms / api.github.com は TLS 1.2+ 必須)
+[Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+
 # 設定
 $BASE_URL = if ($env:DB_BASE_URL) { $env:DB_BASE_URL } else { "https://github.com/lmlight-app/dist_vite/releases/latest/download" }
 $INSTALL_DIR = if ($env:DB_INSTALL_DIR) { $env:DB_INSTALL_DIR } else { "$env:LOCALAPPDATA\db" }
@@ -177,13 +180,36 @@ if (Get-Command psql -ErrorAction SilentlyContinue) {
 
     # vector.dll が未配置なら自動ダウンロード
     if ($PG_DIR -and -not (Test-Path "$PG_DIR\lib\vector.dll")) {
+        # pgvector DLL は VC++ 2015-2022 Redistributable (msvcp140.dll) に依存
+        if (-not (Test-Path "C:\Windows\System32\msvcp140.dll")) {
+            Write-Info "VC++ Redistributable が未インストールです。追加中..."
+            $vcRedist = "$env:TEMP\vc_redist.x64.exe"
+            try {
+                Invoke-WebRequest -Uri "https://aka.ms/vs/17/release/vc_redist.x64.exe" -OutFile $vcRedist -UseBasicParsing
+                Start-Process -FilePath $vcRedist -ArgumentList "/install","/quiet","/norestart" -Wait
+                Remove-Item -Force $vcRedist -ErrorAction SilentlyContinue
+                Write-Success "VC++ Redistributable をインストールしました"
+            } catch {
+                Write-Warn "VC++ Redistributable の自動インストールに失敗しました。手動で https://aka.ms/vs/17/release/vc_redist.x64.exe を導入してください"
+            }
+        }
+
         Write-Info "pgvector をインストール中..."
         $pgMajor = (Split-Path $PG_DIR -Leaf)
-        $pgvectorUrl = "https://github.com/andreiramani/pgvector_pgsql_windows/releases/latest/download/pgvector_pg${pgMajor}_x64.zip"
         $pgvectorZip = "$env:TEMP\pgvector.zip"
         $pgvectorExtract = "$env:TEMP\pgvector_extract"
 
         try {
+            # GitHub API で PG メジャー版に合う最新リリースを解決
+            # (releases/latest は単一PG版のみを指すため、全PG版用の資産は入っていない)
+            $apiUrl = "https://api.github.com/repos/andreiramani/pgvector_pgsql_windows/releases"
+            $releases = Invoke-RestMethod -Uri $apiUrl -UseBasicParsing -Headers @{ "User-Agent" = "lmlight-installer" }
+            $match = $releases | Where-Object { $_.tag_name -match "_${pgMajor}(\.|$)" } | Select-Object -First 1
+            if (-not $match -or $match.assets.Count -eq 0) {
+                throw "PostgreSQL $pgMajor 用の pgvector リリースが見つかりません"
+            }
+            $pgvectorUrl = $match.assets[0].browser_download_url
+
             Invoke-WebRequest -Uri $pgvectorUrl -OutFile $pgvectorZip -UseBasicParsing
             if (Test-Path $pgvectorExtract) { Remove-Item -Recurse -Force $pgvectorExtract }
             Expand-Archive -Path $pgvectorZip -DestinationPath $pgvectorExtract -Force
@@ -203,9 +229,10 @@ if (Get-Command psql -ErrorAction SilentlyContinue) {
             Remove-Item -Force $pgvectorZip -ErrorAction SilentlyContinue
             Remove-Item -Recurse -Force $pgvectorExtract -ErrorAction SilentlyContinue
 
-            Write-Success "pgvector をインストールしました"
+            Write-Success "pgvector をインストールしました (タグ: $($match.tag_name))"
         } catch {
-            Write-Warn "pgvector の自動インストールに失敗しました。手動インストールが必要です: https://github.com/pgvector/pgvector#windows"
+            Write-Warn "pgvector の自動インストールに失敗しました: $($_.Exception.Message)"
+            Write-Warn "手動インストール: https://github.com/andreiramani/pgvector_pgsql_windows/releases"
         }
     } elseif ($PG_DIR) {
         Write-Success "pgvector は既にインストール済みです"
@@ -474,6 +501,7 @@ CREATE TABLE IF NOT EXISTS "ApiConnection" (
     "config" JSONB NOT NULL,
     "shareType" "ShareType" NOT NULL DEFAULT 'PRIVATE',
     "shareTagId" VARCHAR(255),
+    "mcpEnabled" BOOLEAN NOT NULL DEFAULT false,
     "createdBy" VARCHAR(255) NOT NULL,
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP

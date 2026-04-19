@@ -278,6 +278,7 @@ CREATE TABLE IF NOT EXISTS "ApiConnection" (
     "config" JSONB NOT NULL,
     "shareType" "ShareType" NOT NULL DEFAULT 'PRIVATE',
     "shareTagId" VARCHAR(255),
+    "mcpEnabled" BOOLEAN NOT NULL DEFAULT false,
     "createdBy" VARCHAR(255) NOT NULL,
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP
