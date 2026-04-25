@@ -81,6 +81,7 @@ CREATE TABLE IF NOT EXISTS "DefaultSetting" (
     "chunkSize" INTEGER NOT NULL DEFAULT 500,
     "chunkOverlap" INTEGER NOT NULL DEFAULT 100,
     "visionModel" TEXT,
+    "visionPrompt" TEXT,
     "brandColor" TEXT NOT NULL DEFAULT 'default',
     "customLogoText" TEXT DEFAULT 'LL',
     "customLogoImage" TEXT,
@@ -379,6 +380,12 @@ DO $$ BEGIN
 EXCEPTION WHEN undefined_table THEN null; WHEN duplicate_column THEN null; END $$;
 DO $$ BEGIN
     ALTER TABLE "DefaultSetting" ADD COLUMN IF NOT EXISTS "toolSettings" JSONB;
+EXCEPTION WHEN undefined_table THEN null; WHEN duplicate_column THEN null; END $$;
+DO $$ BEGIN
+    ALTER TABLE "DefaultSetting" ADD COLUMN IF NOT EXISTS "visionModel" VARCHAR(255);
+EXCEPTION WHEN undefined_table THEN null; WHEN duplicate_column THEN null; END $$;
+DO $$ BEGIN
+    ALTER TABLE "DefaultSetting" ADD COLUMN IF NOT EXISTS "visionPrompt" TEXT;
 EXCEPTION WHEN undefined_table THEN null; WHEN duplicate_column THEN null; END $$;
 DO $$ BEGIN
     ALTER TABLE "User" ADD COLUMN IF NOT EXISTS "ldapAttributes" JSONB;
