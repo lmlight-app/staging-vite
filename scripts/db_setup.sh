@@ -109,6 +109,31 @@ CREATE TABLE IF NOT EXISTS "UserTag" (
     UNIQUE ("userId", "tagId")
 );
 
+-- Tag-based ACL on first-level shared/ subdirectories. One row per
+-- "claimed" team folder. Drives both file-manager visibility and the
+-- per-dir LLM tools (read_shared_<dir>, list_shared_<dir>) generated
+-- in chat. Untagged shared subdirs stay readable by everyone (legacy)
+-- but can't be exposed to the LLM until tagged via the file manager.
+CREATE TABLE IF NOT EXISTS "SharedDirAcl" (
+    "path" VARCHAR(512) NOT NULL PRIMARY KEY,
+    "shareTagId" VARCHAR(255) NOT NULL,
+    "createdBy" VARCHAR(255) NOT NULL,
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Maps LDAP/AD group DNs to internal Tag and/or role.
+-- On LDAP login the auth service syncs UserTag membership and user.role
+-- based on the user's `memberOf` attribute matching ldapGroupDn here.
+CREATE TABLE IF NOT EXISTS "LdapGroupMapping" (
+    "id" TEXT NOT NULL PRIMARY KEY,
+    "ldapGroupDn" VARCHAR(500) NOT NULL UNIQUE,
+    "tagId" TEXT,
+    "role" "UserRole",
+    "description" TEXT,
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE TABLE IF NOT EXISTS "Bot" (
     "id" TEXT NOT NULL PRIMARY KEY,
     "userId" TEXT NOT NULL,
@@ -484,6 +509,8 @@ CREATE TABLE IF NOT EXISTS datalake.datasets (
 -- Indexes
 CREATE INDEX IF NOT EXISTS "UserTag_userId_idx" ON "UserTag"("userId");
 CREATE INDEX IF NOT EXISTS "UserTag_tagId_idx" ON "UserTag"("tagId");
+CREATE UNIQUE INDEX IF NOT EXISTS "LdapGroupMapping_ldapGroupDn_key" ON "LdapGroupMapping"("ldapGroupDn");
+CREATE INDEX IF NOT EXISTS "LdapGroupMapping_tagId_idx" ON "LdapGroupMapping"("tagId");
 CREATE INDEX IF NOT EXISTS "Bot_userId_idx" ON "Bot"("userId");
 CREATE INDEX IF NOT EXISTS "Bot_shareTagId_idx" ON "Bot"("shareTagId");
 CREATE INDEX IF NOT EXISTS "Document_botId_idx" ON "Document"("botId");
