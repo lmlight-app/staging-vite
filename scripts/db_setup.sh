@@ -323,7 +323,7 @@ CREATE TABLE IF NOT EXISTS "Pipeline" (
     "name" TEXT NOT NULL,
     "description" TEXT,
     "config" JSONB,
-    "shareType" TEXT NOT NULL DEFAULT 'PRIVATE',
+    "shareType" "ShareType" NOT NULL DEFAULT 'PRIVATE',
     "shareTagId" TEXT,
     "createdBy" TEXT NOT NULL,
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -443,6 +443,26 @@ DO $$ BEGIN ALTER TABLE "SavedSqlConnection" ADD COLUMN IF NOT EXISTS "schema" T
 DO $$ BEGIN ALTER TABLE "Pipeline" DROP COLUMN IF EXISTS "exposeAsTool"; EXCEPTION WHEN undefined_table THEN null; END $$;
 DO $$ BEGIN ALTER TABLE "Pipeline" DROP COLUMN IF EXISTS "toolHint";    EXCEPTION WHEN undefined_table THEN null; END $$;
 DO $$ BEGIN ALTER TABLE "Pipeline" DROP COLUMN IF EXISTS "toolMode";    EXCEPTION WHEN undefined_table THEN null; END $$;
+
+-- Older installs created Pipeline.shareType as TEXT instead of the ShareType enum,
+-- diverging from every other share-aware table. Cast in place if it's still TEXT.
+-- Postgres can't auto-cast the TEXT-typed DEFAULT to the enum, so drop / change / re-add.
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = 'public' AND table_name = 'Pipeline'
+          AND column_name = 'shareType' AND data_type = 'text'
+    ) THEN
+        ALTER TABLE "Pipeline" ALTER COLUMN "shareType" DROP DEFAULT;
+        ALTER TABLE "Pipeline"
+            ALTER COLUMN "shareType" TYPE "ShareType"
+            USING "shareType"::"ShareType";
+        ALTER TABLE "Pipeline"
+            ALTER COLUMN "shareType" SET DEFAULT 'PRIVATE';
+    END IF;
+EXCEPTION WHEN undefined_table THEN null;
+END $$;
 
 -- Observability tables (structured logs)
 CREATE TABLE IF NOT EXISTS "AppLog" (
