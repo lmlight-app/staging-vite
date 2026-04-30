@@ -257,8 +257,6 @@ CREATE TABLE IF NOT EXISTS "SavedSqlConnection" (
     "password" TEXT NOT NULL,
     "schema" TEXT NOT NULL DEFAULT 'public',
     "userId" TEXT NOT NULL,
-    "shareType" "ShareType" NOT NULL DEFAULT 'PRIVATE',
-    "shareTagId" TEXT,
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
@@ -310,8 +308,6 @@ CREATE TABLE IF NOT EXISTS "ApiConnection" (
     "name" VARCHAR(255) NOT NULL,
     "type" VARCHAR(50) NOT NULL,
     "config" JSONB NOT NULL,
-    "shareType" "ShareType" NOT NULL DEFAULT 'PRIVATE',
-    "shareTagId" VARCHAR(255),
     "mcpEnabled" BOOLEAN NOT NULL DEFAULT false,
     "createdBy" VARCHAR(255) NOT NULL,
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -349,6 +345,7 @@ CREATE TABLE IF NOT EXISTS "PipelineRun" (
     "result" JSONB,
     "error" TEXT,
     "triggeredBy" TEXT NOT NULL,
+    "runAs" TEXT,
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -444,23 +441,16 @@ DO $$ BEGIN ALTER TABLE "Pipeline" DROP COLUMN IF EXISTS "exposeAsTool"; EXCEPTI
 DO $$ BEGIN ALTER TABLE "Pipeline" DROP COLUMN IF EXISTS "toolHint";    EXCEPTION WHEN undefined_table THEN null; END $$;
 DO $$ BEGIN ALTER TABLE "Pipeline" DROP COLUMN IF EXISTS "toolMode";    EXCEPTION WHEN undefined_table THEN null; END $$;
 
--- Older installs created Pipeline.shareType as TEXT instead of the ShareType enum,
--- diverging from every other share-aware table. Cast in place if it's still TEXT.
--- Postgres can't auto-cast the TEXT-typed DEFAULT to the enum, so drop / change / re-add.
-DO $$
-BEGIN
-    IF EXISTS (
-        SELECT 1 FROM information_schema.columns
-        WHERE table_schema = 'public' AND table_name = 'Pipeline'
-          AND column_name = 'shareType' AND data_type = 'text'
-    ) THEN
-        ALTER TABLE "Pipeline" ALTER COLUMN "shareType" DROP DEFAULT;
-        ALTER TABLE "Pipeline"
-            ALTER COLUMN "shareType" TYPE "ShareType"
-            USING "shareType"::"ShareType";
-        ALTER TABLE "Pipeline"
-            ALTER COLUMN "shareType" SET DEFAULT 'PRIVATE';
-    END IF;
+-- datalake.datasets are owner-private (no independent share — they inherit
+-- visibility from the pipeline that created them). Drop legacy share columns.
+DO $$ BEGIN
+    ALTER TABLE datalake.datasets DROP COLUMN IF EXISTS "shareType";
+    ALTER TABLE datalake.datasets DROP COLUMN IF EXISTS "shareTagId";
+EXCEPTION WHEN undefined_table THEN null;
+END $$;
+-- Pipeline run-as-owner audit field.
+DO $$ BEGIN
+    ALTER TABLE "PipelineRun" ADD COLUMN IF NOT EXISTS "runAs" TEXT;
 EXCEPTION WHEN undefined_table THEN null;
 END $$;
 
@@ -515,8 +505,6 @@ CREATE TABLE IF NOT EXISTS datalake.datasets (
     "name" VARCHAR(255) NOT NULL,
     "description" TEXT,
     "ownerId" VARCHAR(255) NOT NULL,
-    "shareType" "ShareType" NOT NULL DEFAULT 'PRIVATE',
-    "shareTagId" VARCHAR(255),
     "physicalTable" VARCHAR(63) NOT NULL UNIQUE,
     "columns" JSONB NOT NULL,
     "rowCount" INTEGER NOT NULL DEFAULT 0,
@@ -549,7 +537,6 @@ CREATE INDEX IF NOT EXISTS "ApprovalRequest_flowId_idx" ON "ApprovalRequest"("fl
 CREATE INDEX IF NOT EXISTS "ApprovalRequest_requestedBy_idx" ON "ApprovalRequest"("requestedBy");
 CREATE INDEX IF NOT EXISTS "ApprovalStepResult_requestId_idx" ON "ApprovalStepResult"("requestId");
 CREATE INDEX IF NOT EXISTS "SavedSqlConnection_userId_idx" ON "SavedSqlConnection"("userId");
-CREATE INDEX IF NOT EXISTS "SavedSqlConnection_shareTagId_idx" ON "SavedSqlConnection"("shareTagId");
 CREATE INDEX IF NOT EXISTS "Prompt_userId_idx" ON "Prompt"("userId");
 CREATE INDEX IF NOT EXISTS "Prompt_shareTagId_idx" ON "Prompt"("shareTagId");
 CREATE INDEX IF NOT EXISTS "HelpdeskRoom_createdBy_idx" ON "HelpdeskRoom"("createdBy");
@@ -561,8 +548,8 @@ CREATE INDEX IF NOT EXISTS "HelpdeskReadState_userId_idx" ON "HelpdeskReadState"
 CREATE UNIQUE INDEX IF NOT EXISTS "HelpdeskReadState_roomId_userId_key" ON "HelpdeskReadState"("roomId", "userId", "memberId");
 CREATE INDEX IF NOT EXISTS "ApiConnection_createdBy_idx" ON "ApiConnection"("createdBy");
 CREATE INDEX IF NOT EXISTS "ApiConnection_type_idx" ON "ApiConnection"("type");
-CREATE INDEX IF NOT EXISTS "ApiConnection_shareTagId_idx" ON "ApiConnection"("shareTagId");
 CREATE INDEX IF NOT EXISTS "Pipeline_createdBy_idx" ON "Pipeline"("createdBy");
+CREATE INDEX IF NOT EXISTS "Pipeline_shareTagId_idx" ON "Pipeline"("shareTagId");
 CREATE INDEX IF NOT EXISTS "PipelineStep_pipelineId_idx" ON "PipelineStep"("pipelineId");
 CREATE INDEX IF NOT EXISTS "PipelineRun_pipelineId_idx" ON "PipelineRun"("pipelineId");
 CREATE INDEX IF NOT EXISTS "PipelineRun_status_idx" ON "PipelineRun"("status");
@@ -582,7 +569,6 @@ CREATE INDEX IF NOT EXISTS "AuditLog_resourceType_idx" ON "AuditLog"("resourceTy
 -- Data Lake indexes
 CREATE UNIQUE INDEX IF NOT EXISTS "datasets_owner_name_key" ON datalake.datasets("ownerId", "name");
 CREATE INDEX IF NOT EXISTS "datasets_owner_idx" ON datalake.datasets("ownerId");
-CREATE INDEX IF NOT EXISTS "datasets_share_tag_idx" ON datalake.datasets("shareTagId") WHERE "shareType" = 'TAG';
 
 -- Admin user (admin@local / admin123)
 INSERT INTO "User" ("id", "email", "name", "hashedPassword", "role", "status", "updatedAt")
