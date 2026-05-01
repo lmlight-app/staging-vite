@@ -65,15 +65,16 @@ CUDA_MAJOR=$(nvidia-smi 2>/dev/null | grep -oP 'CUDA Version: \K\d+' || echo "12
 echo " CUDA $CUDA_MAJOR detected, installing vLLM..."
 
 if [ "$CUDA_MAJOR" -ge 13 ]; then
-    # CUDA 13+: use vLLM CUDA 13 wheels
-    uv pip install --python "$INSTALL_DIR/venv/bin/python" \
-        vllm==0.19.1 \
-        --extra-index-url "https://wheels.vllm.ai/0.19.1/cu${CUDA_MAJOR}0" \
-        --extra-index-url "https://download.pytorch.org/whl/cu${CUDA_MAJOR}0" \
-        --index-strategy unsafe-best-match
+    # CUDA 13: PyPI default ships cu130 wheels — no extra index needed.
+    uv pip install --python "$INSTALL_DIR/venv/bin/python" vllm==0.20.0
 else
-    # CUDA 12.x: standard install (compatible with CUDA 12.0-12.9)
-    uv pip install --python "$INSTALL_DIR/venv/bin/python" vllm==0.19.1
+    # CUDA 12.x: pull from the cu129 wheel index (only 12.x variant
+    # vLLM publishes for 0.20.0; covers CUDA 12.0–12.9).
+    uv pip install --python "$INSTALL_DIR/venv/bin/python" \
+        vllm==0.20.0 \
+        --extra-index-url "https://wheels.vllm.ai/0.20.0/cu129" \
+        --extra-index-url "https://download.pytorch.org/whl/cu129" \
+        --index-strategy unsafe-best-match
 fi
 
 uv pip install --python "$INSTALL_DIR/venv/bin/python" "openai-whisper>=20231117"
