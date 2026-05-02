@@ -1,10 +1,39 @@
 # AI Server インストーラー for Windows (Vite Edition)
-# 使い方: irm https://raw.githubusercontent.com/lmlight-app/dist_vite/main/scripts/install-windows.ps1 | iex
+# 使い方: irm https://raw.githubusercontent.com/lmlight-app/staging-vite/main/scripts/install-windows.ps1 | iex
 
 $ErrorActionPreference = "Stop"
 
 # TLS 1.2 フォールバック (Windows PowerShell 5.1 は既定で TLS 1.0/1.1。aka.ms / api.github.com は TLS 1.2+ 必須)
 [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+
+# ============================================================
+# 管理者権限チェック + 自動昇格
+# ============================================================
+# winget による PostgreSQL/Ollama インストール、`Start-Service postgresql-x64-NN`、
+# C:\Program Files\PostgreSQL\NN\lib への vector.dll 配置はすべて
+# 管理者権限が必要。非 admin で実行されたら UAC で再起動して新しい
+# admin ウィンドウで継続させる (irm | iex 形式は in-memory なので
+# スクリプト URL を改めて再 fetch する形)。
+$isAdmin = ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+if (-not $isAdmin) {
+    $relaunchUrl = if ($env:DB_INSTALLER_URL) { $env:DB_INSTALLER_URL } else { "https://raw.githubusercontent.com/lmlight-app/staging-vite/main/scripts/install-windows.ps1" }
+    Write-Host ""
+    Write-Host "管理者権限が必要です。UAC ダイアログで「はい」を選択してください..." -ForegroundColor Yellow
+    Write-Host "新しい管理者ウィンドウでインストールが続行されます。" -ForegroundColor Yellow
+    Write-Host ""
+    try {
+        Start-Process -FilePath "powershell.exe" -Verb RunAs -ArgumentList @(
+            "-NoProfile",
+            "-ExecutionPolicy", "Bypass",
+            "-Command", "irm $relaunchUrl | iex; Read-Host '完了しました。Enter キーで閉じる'"
+        ) -ErrorAction Stop
+    } catch {
+        Write-Host "[エラー] 管理者権限への昇格がキャンセルされました" -ForegroundColor Red
+        Write-Host "PowerShell を「管理者として実行」で開き直して再度お試しください" -ForegroundColor Red
+        exit 1
+    }
+    exit 0
+}
 
 # 設定
 $BASE_URL = if ($env:DB_BASE_URL) { $env:DB_BASE_URL } else { "https://github.com/lmlight-app/dist_vite/releases/latest/download" }
@@ -40,12 +69,6 @@ Write-Host ""
 
 Write-Info "アーキテクチャ: $ARCH"
 Write-Info "インストール先: $INSTALL_DIR"
-
-# 管理者権限チェック
-$isAdmin = ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-if (-not $isAdmin) {
-    Write-Warn "管理者権限で実行していません。一部の機能が制限される場合があります。"
-}
 
 # ディレクトリ作成
 New-Item -ItemType Directory -Force -Path "$INSTALL_DIR" | Out-Null
@@ -103,8 +126,8 @@ if ((Get-Command tesseract -ErrorAction SilentlyContinue) -or (Test-Path "C:\Pro
     $MISSING_DEPS += "tesseract"
 }
 
-# winget で依存関係をインストール（オプション）
-if ($MISSING_DEPS.Count -gt 0 -and $isAdmin) {
+# winget で依存関係をインストール (常に admin で実行されているのでガード不要)
+if ($MISSING_DEPS.Count -gt 0) {
     Write-Info "不足している依存関係を自動インストールしますか？ (Y/n)"
     $response = Read-Host
     if ($response -eq "" -or $response -eq "Y" -or $response -eq "y") {
@@ -144,32 +167,135 @@ if (Get-Command psql -ErrorAction SilentlyContinue) {
     # PostgreSQL サービス起動
     $pgService = Get-Service -Name "postgresql*" -ErrorAction SilentlyContinue | Select-Object -First 1
     if ($pgService -and $pgService.Status -ne "Running") {
-        Start-Service $pgService.Name
-        Start-Sleep -Seconds 3
+        try {
+            Start-Service $pgService.Name -ErrorAction Stop
+            Start-Sleep -Seconds 3
+        } catch {
+            Write-Error "PostgreSQL サービスの起動に失敗しました: $_`nサービス '$($pgService.Name)' を手動で起動してから再実行してください"
+        }
     }
 
-    # ポート検出: 5432 → 5433 の順で試行
-    $env:PGPASSWORD = "postgres"
+    # ポート検出 + postgres スーパーユーザーパスワード判定
+    # PG の Windows インストーラはパスワード設定を強制するので "postgres"
+    # は予測値ではない。候補を順に試して、全部だめなら GUI で聞く。
     $ErrorActionPreference = "Continue"
-    $null = psql -U postgres -p 5432 -c "SELECT 1" 2>$null
-    if ($LASTEXITCODE -ne 0) {
-        $null = psql -U postgres -p 5433 -c "SELECT 1" 2>$null
-        if ($LASTEXITCODE -eq 0) {
-            $DB_PORT = "5433"
-            Write-Info "PostgreSQL ポート: 5433"
-        }
-    } else {
-        Write-Info "PostgreSQL ポート: 5432"
+
+    function Test-PgConnect {
+        param([string]$Password, [string]$Port)
+        $env:PGPASSWORD = $Password
+        $null = psql -U postgres -p $Port -c "SELECT 1" 2>$null
+        return ($LASTEXITCODE -eq 0)
     }
-    # データベースとユーザー作成 (エラーは無視)
-    $null = psql -U postgres -p $DB_PORT -c "CREATE USER $DB_USER WITH PASSWORD '$DB_PASSWORD';" 2>$null
-    $null = psql -U postgres -p $DB_PORT -c "CREATE DATABASE $DB_NAME OWNER $DB_USER;" 2>$null
-    $null = psql -U postgres -p $DB_PORT -c "ALTER USER $DB_USER CREATEDB;" 2>$null
+
+    # まずポート決定 (5432 → 5433)。認証は別途解決するので、ここでは
+    # libpq が「password authentication failed」を返してくれれば
+    # ポート自体は届いていると判断する。
+    function Test-PgPort {
+        param([string]$Port)
+        $env:PGPASSWORD = "__probe_invalid__"
+        $output = psql -U postgres -p $Port -c "SELECT 1" 2>&1
+        # exit 0 = trust auth で通った / exit 2 = password auth failed (= ポート生きてる)
+        # exit 1 + "could not connect" = ポート死んでる
+        if ($LASTEXITCODE -eq 0) { return $true }
+        if ($output -match "password authentication failed|fe_sendauth|no password supplied") { return $true }
+        return $false
+    }
+
+    if (Test-PgPort -Port "5432") {
+        $DB_PORT = "5432"
+    } elseif (Test-PgPort -Port "5433") {
+        $DB_PORT = "5433"
+    } else {
+        Write-Error "PostgreSQL に接続できません (5432/5433 とも応答なし)。サービスが起動しているか確認してください"
+    }
+    Write-Info "PostgreSQL ポート: $DB_PORT"
+
+    # postgres パスワード解決
+    $pgSuperPassword = $null
+    foreach ($candidate in @("postgres", $DB_PASSWORD, "")) {
+        if (Test-PgConnect -Password $candidate -Port $DB_PORT) {
+            $pgSuperPassword = $candidate
+            break
+        }
+    }
+
+    if ($null -eq $pgSuperPassword) {
+        Write-Warn "postgres スーパーユーザーへの自動接続に失敗しました"
+        Write-Info "PostgreSQL インストール時に設定したパスワードを入力してください"
+        Add-Type -AssemblyName System.Windows.Forms
+        Add-Type -AssemblyName System.Drawing
+        for ($i = 1; $i -le 3; $i++) {
+            $form = New-Object System.Windows.Forms.Form
+            $form.Text = "PostgreSQL 管理者パスワード"
+            $form.Size = New-Object System.Drawing.Size(420, 180)
+            $form.StartPosition = "CenterScreen"
+            $form.Topmost = $true
+            $form.FormBorderStyle = "FixedDialog"
+            $form.MaximizeBox = $false; $form.MinimizeBox = $false
+
+            $label = New-Object System.Windows.Forms.Label
+            $label.Text = "PostgreSQL インストール時に設定した postgres ユーザーのパスワードを入力してください (試行 $i/3)"
+            $label.Location = New-Object System.Drawing.Point(12, 15)
+            $label.Size = New-Object System.Drawing.Size(380, 40)
+            $form.Controls.Add($label)
+
+            $textBox = New-Object System.Windows.Forms.TextBox
+            $textBox.UseSystemPasswordChar = $true
+            $textBox.Location = New-Object System.Drawing.Point(12, 60)
+            $textBox.Size = New-Object System.Drawing.Size(380, 24)
+            $form.Controls.Add($textBox)
+
+            $okButton = New-Object System.Windows.Forms.Button
+            $okButton.Text = "OK"
+            $okButton.Location = New-Object System.Drawing.Point(225, 100)
+            $okButton.Size = New-Object System.Drawing.Size(80, 28)
+            $okButton.DialogResult = [System.Windows.Forms.DialogResult]::OK
+            $form.Controls.Add($okButton); $form.AcceptButton = $okButton
+
+            $cancelButton = New-Object System.Windows.Forms.Button
+            $cancelButton.Text = "キャンセル"
+            $cancelButton.Location = New-Object System.Drawing.Point(312, 100)
+            $cancelButton.Size = New-Object System.Drawing.Size(80, 28)
+            $cancelButton.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
+            $form.Controls.Add($cancelButton); $form.CancelButton = $cancelButton
+
+            $form.Add_Shown({ $textBox.Focus() | Out-Null })
+            $result = $form.ShowDialog()
+            if ($result -ne [System.Windows.Forms.DialogResult]::OK) {
+                Write-Error "ユーザーがパスワード入力をキャンセルしました"
+            }
+            $plain = $textBox.Text
+            if (Test-PgConnect -Password $plain -Port $DB_PORT) {
+                $pgSuperPassword = $plain
+                break
+            }
+            [System.Windows.Forms.MessageBox]::Show("認証失敗。再入力してください。", "AI Server", "OK", "Warning") | Out-Null
+        }
+    }
+
+    if ($null -eq $pgSuperPassword) {
+        Write-Error "PostgreSQL の postgres スーパーユーザーに接続できません。pg_hba.conf を確認するか、postgres ユーザーのパスワードをリセットしてから再実行してください"
+    }
+
+    $env:PGPASSWORD = $pgSuperPassword
+    Write-Success "PostgreSQL 管理者認証 OK"
+
+    # データベースとユーザー作成 — エラー出力をキャプチャして失敗を可視化
+    # (ロール/DB が既存の場合のエラーメッセージはログ目的で出力)
+    $createUserOut = psql -U postgres -p $DB_PORT -c "CREATE USER `"$DB_USER`" WITH PASSWORD '$DB_PASSWORD';" 2>&1
+    if ($LASTEXITCODE -ne 0 -and $createUserOut -notmatch "already exists") {
+        Write-Error "ユーザー作成失敗: $createUserOut"
+    }
+    $createDbOut = psql -U postgres -p $DB_PORT -c "CREATE DATABASE `"$DB_NAME`" OWNER `"$DB_USER`";" 2>&1
+    if ($LASTEXITCODE -ne 0 -and $createDbOut -notmatch "already exists") {
+        Write-Error "DB 作成失敗: $createDbOut"
+    }
+    $null = psql -U postgres -p $DB_PORT -c "ALTER USER `"$DB_USER`" CREATEDB;" 2>&1
 
     # pgvector拡張 - 自動インストール
     # PostgreSQL インストールパスを検出
     $PG_DIR = $null
-    $pgVersions = @("17", "16", "15", "14")
+    $pgVersions = @("18", "17", "16", "15", "14")
     foreach ($v in $pgVersions) {
         $candidate = "C:\Program Files\PostgreSQL\$v"
         if (Test-Path "$candidate\bin\psql.exe") {
@@ -214,15 +340,17 @@ if (Get-Command psql -ErrorAction SilentlyContinue) {
             if (Test-Path $pgvectorExtract) { Remove-Item -Recurse -Force $pgvectorExtract }
             Expand-Archive -Path $pgvectorZip -DestinationPath $pgvectorExtract -Force
 
-            # DLL とコントロールファイルを配置
+            # DLL とコントロールファイルを配置 — Program Files 配下なので
+            # admin 権限がないと Access Denied。-ErrorAction Stop で
+            # 失敗を catch に飛ばす。
             Get-ChildItem -Path $pgvectorExtract -Recurse -Filter "vector.dll" | ForEach-Object {
-                Copy-Item $_.FullName "$PG_DIR\lib\vector.dll" -Force
+                Copy-Item $_.FullName "$PG_DIR\lib\vector.dll" -Force -ErrorAction Stop
             }
             Get-ChildItem -Path $pgvectorExtract -Recurse -Filter "vector.control" | ForEach-Object {
-                Copy-Item $_.FullName "$PG_DIR\share\extension\vector.control" -Force
+                Copy-Item $_.FullName "$PG_DIR\share\extension\vector.control" -Force -ErrorAction Stop
             }
             Get-ChildItem -Path $pgvectorExtract -Recurse -Filter "vector--*.sql" | ForEach-Object {
-                Copy-Item $_.FullName "$PG_DIR\share\extension\$($_.Name)" -Force
+                Copy-Item $_.FullName "$PG_DIR\share\extension\$($_.Name)" -Force -ErrorAction Stop
             }
 
             # クリーンアップ
@@ -230,15 +358,21 @@ if (Get-Command psql -ErrorAction SilentlyContinue) {
             Remove-Item -Recurse -Force $pgvectorExtract -ErrorAction SilentlyContinue
 
             Write-Success "pgvector をインストールしました (タグ: $($match.tag_name))"
+        } catch [System.UnauthorizedAccessException] {
+            Write-Error "pgvector DLL の配置に失敗 (Access Denied): $($_.Exception.Message)`n$PG_DIR\lib への書き込み権限がありません。管理者として PowerShell を開き直して再実行してください"
         } catch {
             Write-Warn "pgvector の自動インストールに失敗しました: $($_.Exception.Message)"
-            Write-Warn "手動インストール: https://github.com/andreiramani/pgvector_pgsql_windows/releases"
+            Write-Warn "RAG (ベクトル検索) は無効化されます。手動インストール: https://github.com/andreiramani/pgvector_pgsql_windows/releases"
         }
     } elseif ($PG_DIR) {
         Write-Success "pgvector は既にインストール済みです"
     }
 
-    $null = psql -U postgres -p $DB_PORT -d $DB_NAME -c "CREATE EXTENSION IF NOT EXISTS vector;" 2>$null
+    $extensionOut = psql -U postgres -p $DB_PORT -d $DB_NAME -c "CREATE EXTENSION IF NOT EXISTS vector;" 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        Write-Warn "pgvector 拡張の有効化に失敗: $extensionOut"
+        Write-Warn "RAG (ベクトル検索) は無効化されます"
+    }
 
     $ErrorActionPreference = "Stop"
 

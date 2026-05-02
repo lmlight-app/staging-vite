@@ -45,10 +45,12 @@ OutputBaseFilename={#InstallerOutput}
 Compression=lzma2/max
 SolidCompression=yes
 WizardStyle=modern
-; Run as the current user (matches the legacy install flow). PG/Ollama
-; installers themselves prompt for elevation when needed.
-PrivilegesRequired=lowest
-PrivilegesRequiredOverridesAllowed=dialog
+; PostgreSQL setup requires admin: winget installs PG to Program Files,
+; pgvector.dll has to be dropped into PG's lib/extension dirs (also under
+; Program Files), and Start-Service for `postgresql-x64-NN` is an
+; SCM-privileged operation. Run-as-current-user fails silently on all
+; three. Force a single UAC prompt up front instead.
+PrivilegesRequired=admin
 UninstallDisplayIcon={app}\{#AppExeName}
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
@@ -95,11 +97,18 @@ Name: "desktopicon"; Description: "デスクトップショートカットを作
 ; -InstallDir tells the script where the backend EXE landed so it
 ; can write the .env there. waituntilterminated so the wizard's
 ; progress page reflects real PG/Ollama install time (1-3 min on
-; first run). runhidden keeps the UI clean during the long step.
+; first run).
+;
+; NOT runhidden: the script may need to prompt for the postgres
+; super-user password (PG installer forces the user to set one and
+; we cannot guess it), and the user should see PG/Ollama install
+; progress + any failures rather than silently hanging on a hidden
+; window. A non-zero exit aborts the wizard so the user knows
+; something failed.
 Filename: "powershell.exe"; \
   Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\scripts\post-install.ps1"" -InstallDir ""{app}"""; \
   StatusMsg: "依存パッケージをインストール中 (PostgreSQL / Ollama)..."; \
-  Flags: runhidden waituntilterminated
+  Flags: waituntilterminated
 
 ; Stage 2: optional auto-launch on first install (skipped on /silent).
 ; Goes through start.ps1 to ensure PG / Ollama come up too —
