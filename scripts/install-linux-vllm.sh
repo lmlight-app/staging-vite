@@ -60,19 +60,25 @@ if [ ! -d "$INSTALL_DIR/venv" ]; then
     uv venv --python 3.12 "$INSTALL_DIR/venv"
 fi
 
+# vLLM version. Bump together with api-vllm/pyproject.toml's `vllm~=X.Y.0`
+# constraint when moving across patches. The wheels.vllm.ai host is version-
+# pathed (one URL per release), so even though pyproject is loose this script
+# pins the exact patch — keep them in sync.
+VLLM_VER=0.20.1
+
 # Detect CUDA version for vLLM wheel selection
 CUDA_MAJOR=$(nvidia-smi 2>/dev/null | grep -oP 'CUDA Version: \K\d+' || echo "12")
-echo " CUDA $CUDA_MAJOR detected, installing vLLM..."
+echo " CUDA $CUDA_MAJOR detected, installing vLLM $VLLM_VER..."
 
 if [ "$CUDA_MAJOR" -ge 13 ]; then
     # CUDA 13: PyPI default ships cu130 wheels — no extra index needed.
-    uv pip install --python "$INSTALL_DIR/venv/bin/python" vllm==0.20.0
+    uv pip install --python "$INSTALL_DIR/venv/bin/python" "vllm==$VLLM_VER"
 else
     # CUDA 12.x: pull from the cu129 wheel index (only 12.x variant
-    # vLLM publishes for 0.20.0; covers CUDA 12.0–12.9).
+    # vLLM publishes for $VLLM_VER; covers CUDA 12.0–12.9).
     uv pip install --python "$INSTALL_DIR/venv/bin/python" \
-        vllm==0.20.0 \
-        --extra-index-url "https://wheels.vllm.ai/0.20.0/cu129" \
+        "vllm==$VLLM_VER" \
+        --extra-index-url "https://wheels.vllm.ai/$VLLM_VER/cu129" \
         --extra-index-url "https://download.pytorch.org/whl/cu129" \
         --index-strategy unsafe-best-match
 fi
