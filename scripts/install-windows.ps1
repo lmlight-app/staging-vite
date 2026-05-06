@@ -876,11 +876,8 @@ DO `$`$ BEGIN
     ALTER TABLE "DefaultSetting" ADD COLUMN IF NOT EXISTS "visionPrompt" TEXT;
 EXCEPTION WHEN undefined_table THEN null; WHEN duplicate_column THEN null; END `$`$;
 
--- SQL dialect abstraction was removed. Drop the column if it exists from an
--- older install and restore NOT NULL on the credential columns.
-DO `$`$ BEGIN
-    ALTER TABLE "SavedSqlConnection" DROP COLUMN IF EXISTS "dialect";
-EXCEPTION WHEN undefined_table THEN null; END `$`$;
+-- SavedSqlConnection credential columns: backfill nulls + restore NOT NULL.
+-- Idempotent — runs harmlessly on already-migrated DBs.
 DO `$`$ BEGIN UPDATE "SavedSqlConnection" SET "host" = COALESCE("host", 'localhost') WHERE "host" IS NULL;
 EXCEPTION WHEN undefined_table THEN null; END `$`$;
 DO `$`$ BEGIN UPDATE "SavedSqlConnection" SET "port" = COALESCE("port", 5432) WHERE "port" IS NULL;
@@ -901,20 +898,7 @@ EXCEPTION WHEN undefined_table THEN null; END `$`$;
 DO `$`$ BEGIN ALTER TABLE "SavedSqlConnection" ADD COLUMN IF NOT EXISTS "schema" TEXT NOT NULL DEFAULT 'public';
 EXCEPTION WHEN undefined_table THEN null; END `$`$;
 
--- Toolable Pipeline (Action) — removed in role-A cleanup (drop if upgrading from an older install)
-DO `$`$ BEGIN ALTER TABLE "Pipeline" DROP COLUMN IF EXISTS "exposeAsTool";
-EXCEPTION WHEN undefined_table THEN null; END `$`$;
-DO `$`$ BEGIN ALTER TABLE "Pipeline" DROP COLUMN IF EXISTS "toolHint";
-EXCEPTION WHEN undefined_table THEN null; END `$`$;
-DO `$`$ BEGIN ALTER TABLE "Pipeline" DROP COLUMN IF EXISTS "toolMode";
-EXCEPTION WHEN undefined_table THEN null; END `$`$;
-
--- datalake.datasets owner-private; Pipeline run-as-owner audit field.
-DO `$`$ BEGIN
-    ALTER TABLE datalake.datasets DROP COLUMN IF EXISTS "shareType";
-    ALTER TABLE datalake.datasets DROP COLUMN IF EXISTS "shareTagId";
-EXCEPTION WHEN undefined_table THEN null;
-END `$`$;
+-- Pipeline run-as-owner audit field (added with tag-share rollout).
 DO `$`$ BEGIN
     ALTER TABLE "PipelineRun" ADD COLUMN IF NOT EXISTS "runAs" TEXT;
 EXCEPTION WHEN undefined_table THEN null;

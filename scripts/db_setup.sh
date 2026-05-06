@@ -420,11 +420,8 @@ DO $$ BEGIN
     END IF;
 END $$;
 
--- SQL dialect abstraction was removed. Drop the column if it exists from an
--- older install and restore NOT NULL on the credential columns.
-DO $$ BEGIN
-    ALTER TABLE "SavedSqlConnection" DROP COLUMN IF EXISTS "dialect";
-EXCEPTION WHEN undefined_table THEN null; END $$;
+-- SavedSqlConnection credential columns: backfill nulls + restore NOT NULL.
+-- Idempotent — runs harmlessly on already-migrated DBs.
 DO $$ BEGIN UPDATE "SavedSqlConnection" SET "host" = COALESCE("host", 'localhost') WHERE "host" IS NULL; EXCEPTION WHEN undefined_table THEN null; END $$;
 DO $$ BEGIN UPDATE "SavedSqlConnection" SET "port" = COALESCE("port", 5432) WHERE "port" IS NULL; EXCEPTION WHEN undefined_table THEN null; END $$;
 DO $$ BEGIN UPDATE "SavedSqlConnection" SET "dbUser" = COALESCE("dbUser", '') WHERE "dbUser" IS NULL; EXCEPTION WHEN undefined_table THEN null; END $$;
@@ -435,19 +432,6 @@ DO $$ BEGIN ALTER TABLE "SavedSqlConnection" ALTER COLUMN "dbUser" SET NOT NULL;
 DO $$ BEGIN ALTER TABLE "SavedSqlConnection" ALTER COLUMN "password" SET NOT NULL; EXCEPTION WHEN undefined_table THEN null; END $$;
 -- PostgreSQL schema selection (previously always hard-coded to 'public').
 DO $$ BEGIN ALTER TABLE "SavedSqlConnection" ADD COLUMN IF NOT EXISTS "schema" TEXT NOT NULL DEFAULT 'public'; EXCEPTION WHEN undefined_table THEN null; END $$;
-
--- Toolable Pipeline (Action) — removed in role-A cleanup (drop if upgrading from an older install)
-DO $$ BEGIN ALTER TABLE "Pipeline" DROP COLUMN IF EXISTS "exposeAsTool"; EXCEPTION WHEN undefined_table THEN null; END $$;
-DO $$ BEGIN ALTER TABLE "Pipeline" DROP COLUMN IF EXISTS "toolHint";    EXCEPTION WHEN undefined_table THEN null; END $$;
-DO $$ BEGIN ALTER TABLE "Pipeline" DROP COLUMN IF EXISTS "toolMode";    EXCEPTION WHEN undefined_table THEN null; END $$;
-
--- datalake.datasets are owner-private (no independent share — they inherit
--- visibility from the pipeline that created them). Drop legacy share columns.
-DO $$ BEGIN
-    ALTER TABLE datalake.datasets DROP COLUMN IF EXISTS "shareType";
-    ALTER TABLE datalake.datasets DROP COLUMN IF EXISTS "shareTagId";
-EXCEPTION WHEN undefined_table THEN null;
-END $$;
 -- Pipeline run-as-owner audit field.
 DO $$ BEGIN
     ALTER TABLE "PipelineRun" ADD COLUMN IF NOT EXISTS "runAs" TEXT;
