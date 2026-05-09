@@ -522,33 +522,6 @@ CREATE TABLE IF NOT EXISTS "Message" (
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
-CREATE TABLE IF NOT EXISTS "Workflow" (
-    "id" TEXT NOT NULL PRIMARY KEY,
-    "name" TEXT NOT NULL,
-    "description" TEXT,
-    "webhookUrl" TEXT NOT NULL,
-    "method" TEXT NOT NULL DEFAULT 'POST',
-    "headers" JSONB,
-    "body" JSONB,
-    "attachments" JSONB,
-    "createdBy" TEXT NOT NULL,
-    "shareTagId" TEXT,
-    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE TABLE IF NOT EXISTS "WorkflowExecution" (
-    "id" TEXT NOT NULL PRIMARY KEY,
-    "workflowId" TEXT NOT NULL,
-    "executedBy" TEXT NOT NULL,
-    "status" TEXT NOT NULL,
-    "statusCode" INTEGER,
-    "response" TEXT,
-    "error" TEXT,
-    "duration" INTEGER,
-    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-
 CREATE TABLE IF NOT EXISTS "ApprovalFlow" (
     "id" TEXT NOT NULL PRIMARY KEY,
     "name" TEXT NOT NULL,
@@ -778,10 +751,6 @@ CREATE INDEX IF NOT EXISTS "Chat_userId_model_idx" ON "Chat"("userId", "model");
 CREATE INDEX IF NOT EXISTS "Chat_userId_idx" ON "Chat"("userId");
 CREATE INDEX IF NOT EXISTS "Chat_botId_idx" ON "Chat"("botId");
 CREATE INDEX IF NOT EXISTS "Message_chatId_createdAt_idx" ON "Message"("chatId", "createdAt");
-CREATE INDEX IF NOT EXISTS "Workflow_createdBy_idx" ON "Workflow"("createdBy");
-CREATE INDEX IF NOT EXISTS "Workflow_shareTagId_idx" ON "Workflow"("shareTagId");
-CREATE INDEX IF NOT EXISTS "WorkflowExecution_workflowId_createdAt_idx" ON "WorkflowExecution"("workflowId", "createdAt");
-CREATE INDEX IF NOT EXISTS "WorkflowExecution_executedBy_idx" ON "WorkflowExecution"("executedBy");
 CREATE INDEX IF NOT EXISTS "ApprovalFlow_createdBy_idx" ON "ApprovalFlow"("createdBy");
 CREATE INDEX IF NOT EXISTS "ApprovalFlowStep_flowId_idx" ON "ApprovalFlowStep"("flowId");
 CREATE INDEX IF NOT EXISTS "ApprovalRequest_flowId_idx" ON "ApprovalRequest"("flowId");
