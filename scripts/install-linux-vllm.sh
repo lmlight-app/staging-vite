@@ -64,7 +64,7 @@ fi
 # constraint when moving across patches. The wheels.vllm.ai host is version-
 # pathed (one URL per release), so even though pyproject is loose this script
 # pins the exact patch — keep them in sync.
-VLLM_VER=0.20.1
+VLLM_VER=0.20.2
 
 # Detect CUDA version for vLLM wheel selection
 CUDA_MAJOR=$(nvidia-smi 2>/dev/null | grep -oP 'CUDA Version: \K\d+' || echo "12")
