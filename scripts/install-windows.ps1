@@ -569,6 +569,7 @@ CREATE TABLE IF NOT EXISTS "ApprovalStepResult" (
 CREATE TABLE IF NOT EXISTS "SavedSqlConnection" (
     "id" TEXT NOT NULL PRIMARY KEY,
     "name" TEXT NOT NULL,
+    "dbType" TEXT NOT NULL DEFAULT 'postgresql',
     "host" TEXT NOT NULL DEFAULT 'localhost',
     "port" INTEGER NOT NULL DEFAULT 5432,
     "database" TEXT NOT NULL,
@@ -579,6 +580,8 @@ CREATE TABLE IF NOT EXISTS "SavedSqlConnection" (
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+-- 既存テーブルへの dbType 追加 (auto-migrate 兼ねた idempotent ALTER)
+DO `$`$ BEGIN ALTER TABLE "SavedSqlConnection" ADD COLUMN IF NOT EXISTS "dbType" TEXT NOT NULL DEFAULT 'postgresql'; EXCEPTION WHEN undefined_table THEN null; END `$`$;
 
 CREATE TABLE IF NOT EXISTS "Prompt" (
     "id" TEXT NOT NULL PRIMARY KEY,
