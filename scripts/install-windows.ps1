@@ -376,11 +376,35 @@ if (Get-Command psql -ErrorAction SilentlyContinue) {
 
     $ErrorActionPreference = "Stop"
 
-    # マイグレーション実行
+    # マイグレーション実行 (schema 分離: public / approval / helpdesk / vision / log / datalake / pgvector)
     Write-Info "データベースマイグレーションを実行中..."
 
     $SQL_MIGRATION = @"
--- 列挙型
+-- ── Schemas ─────────────────────────────────────────────────────────────────
+CREATE SCHEMA IF NOT EXISTS approval;
+CREATE SCHEMA IF NOT EXISTS helpdesk;
+CREATE SCHEMA IF NOT EXISTS vision;
+CREATE SCHEMA IF NOT EXISTS log;
+CREATE SCHEMA IF NOT EXISTS datalake;
+CREATE SCHEMA IF NOT EXISTS pgvector;
+
+-- ── 既存環境からの schema 移動 (public.X → target.X) ─────────────────────────
+-- legacy customer 上は ApprovalFlow 等が public schema に残ってる可能性がある。
+-- 下の CREATE TABLE IF NOT EXISTS で空テーブルが先にできると ALTER SET SCHEMA
+-- が target 衝突で失敗するため、CREATE より前に移動する。
+ALTER TABLE IF EXISTS public."ApprovalFlow" SET SCHEMA approval;
+ALTER TABLE IF EXISTS public."ApprovalFlowStep" SET SCHEMA approval;
+ALTER TABLE IF EXISTS public."ApprovalRequest" SET SCHEMA approval;
+ALTER TABLE IF EXISTS public."ApprovalStepResult" SET SCHEMA approval;
+ALTER TABLE IF EXISTS public."HelpdeskRoom" SET SCHEMA helpdesk;
+ALTER TABLE IF EXISTS public."HelpdeskMember" SET SCHEMA helpdesk;
+ALTER TABLE IF EXISTS public."HelpdeskReadState" SET SCHEMA helpdesk;
+ALTER TABLE IF EXISTS public."YoloModel" SET SCHEMA vision;
+ALTER TABLE IF EXISTS public."VisionAutomationRule" SET SCHEMA vision;
+ALTER TABLE IF EXISTS public."AppLog" SET SCHEMA log;
+ALTER TABLE IF EXISTS public."AuditLog" SET SCHEMA log;
+
+-- ── Enums ───────────────────────────────────────────────────────────────────
 DO `$`$ BEGIN CREATE TYPE "UserRole" AS ENUM ('ADMIN', 'SUPER', 'USER'); EXCEPTION WHEN duplicate_object THEN null; END `$`$;
 DO `$`$ BEGIN CREATE TYPE "UserStatus" AS ENUM ('ACTIVE', 'INACTIVE'); EXCEPTION WHEN duplicate_object THEN null; END `$`$;
 DO `$`$ BEGIN CREATE TYPE "MessageRole" AS ENUM ('USER', 'ASSISTANT', 'SYSTEM'); EXCEPTION WHEN duplicate_object THEN null; END `$`$;
@@ -388,33 +412,95 @@ DO `$`$ BEGIN CREATE TYPE "ShareType" AS ENUM ('PRIVATE', 'TAG'); EXCEPTION WHEN
 DO `$`$ BEGIN CREATE TYPE "DocumentType" AS ENUM ('PDF', 'WEB', 'TEXT', 'CSV', 'EXCEL', 'WORD', 'IMAGE', 'JSON'); EXCEPTION WHEN duplicate_object THEN null; END `$`$;
 DO `$`$ BEGIN CREATE TYPE "ApprovalStatus" AS ENUM ('PENDING', 'APPROVED', 'REJECTED'); EXCEPTION WHEN duplicate_object THEN null; END `$`$;
 
--- Rename from UserSettings if upgrading
-DO `$`$ BEGIN
-    IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'UserSettings' AND table_schema = 'public') THEN
-        ALTER TABLE "UserSettings" RENAME TO "DefaultSetting";
-    END IF;
-END `$`$;
-
--- テーブル
+-- ── public schema (主要 entity) ─────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS "User" (
-    "id" TEXT NOT NULL PRIMARY KEY,
-    "name" TEXT,
-    "email" TEXT NOT NULL UNIQUE,
-    "emailVerified" TIMESTAMP(3),
-    "image" TEXT,
-    "hashedPassword" TEXT,
-    "authProvider" TEXT NOT NULL DEFAULT 'local',
+    "id" VARCHAR(255) NOT NULL PRIMARY KEY,
+    "name" VARCHAR(255),
+    "email" VARCHAR(255) NOT NULL UNIQUE,
+    "emailVerified" TIMESTAMP,
+    "image" VARCHAR(255),
+    "hashedPassword" VARCHAR(255),
+    "authProvider" VARCHAR(255) NOT NULL DEFAULT 'local',
     "role" "UserRole" NOT NULL DEFAULT 'USER',
     "status" "UserStatus" NOT NULL DEFAULT 'ACTIVE',
-    "lastLoginAt" TIMESTAMP(3),
-    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP
+    "ldapAttributes" JSONB,
+    "lastLoginAt" TIMESTAMP,
+    "createdAt" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS "Tag" (
+    "id" VARCHAR(255) NOT NULL PRIMARY KEY,
+    "name" VARCHAR(255) NOT NULL UNIQUE,
+    "description" TEXT,
+    "createdAt" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS "UserTag" (
+    "id" VARCHAR(255) NOT NULL PRIMARY KEY,
+    "userId" VARCHAR(255) NOT NULL,
+    "tagId" VARCHAR(255) NOT NULL,
+    "createdAt" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT "UserTag_userId_tagId_key" UNIQUE ("userId", "tagId")
+);
+
+CREATE TABLE IF NOT EXISTS "LdapGroupMapping" (
+    "id" VARCHAR(255) NOT NULL PRIMARY KEY,
+    "ldapGroupDn" VARCHAR(500) NOT NULL UNIQUE,
+    "tagId" VARCHAR(255),
+    "role" "UserRole",
+    "description" TEXT,
+    "createdAt" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS "Bot" (
+    "id" VARCHAR(255) NOT NULL PRIMARY KEY,
+    "userId" VARCHAR(255) NOT NULL,
+    "name" VARCHAR(255) NOT NULL,
+    "description" TEXT,
+    "url" TEXT,
+    "shareType" "ShareType" NOT NULL DEFAULT 'PRIVATE',
+    "shareTagId" VARCHAR(255),
+    "createdAt" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS "Document" (
+    "id" VARCHAR(255) NOT NULL PRIMARY KEY,
+    "botId" VARCHAR(255) NOT NULL,
+    "name" VARCHAR(255) NOT NULL,
+    "type" "DocumentType" NOT NULL DEFAULT 'PDF',
+    "url" TEXT,
+    "metadata" JSONB,
+    "createdAt" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS "Chat" (
+    "id" VARCHAR(255) NOT NULL PRIMARY KEY,
+    "userId" VARCHAR(255) NOT NULL,
+    "model" VARCHAR(255) NOT NULL,
+    "sessionId" VARCHAR(255) NOT NULL,
+    "botId" VARCHAR(255),
+    "createdAt" TIMESTAMP NOT NULL,
+    "updatedAt" TIMESTAMP NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS "Message" (
+    "id" VARCHAR(255) NOT NULL PRIMARY KEY,
+    "chatId" VARCHAR(255) NOT NULL,
+    "role" "MessageRole" NOT NULL,
+    "content" TEXT NOT NULL,
+    "metadata" JSONB,
+    "createdAt" TIMESTAMP NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS "DefaultSetting" (
-    "id" TEXT NOT NULL PRIMARY KEY,
-    "userId" TEXT NOT NULL UNIQUE,
-    "defaultModel" TEXT,
+    "id" VARCHAR(255) NOT NULL PRIMARY KEY,
+    "userId" VARCHAR(255) NOT NULL UNIQUE,
+    "defaultModel" VARCHAR(255),
     "customPrompt" TEXT,
     "historyLimit" INTEGER NOT NULL DEFAULT 2,
     "temperature" DOUBLE PRECISION NOT NULL DEFAULT 0.7,
@@ -423,206 +509,63 @@ CREATE TABLE IF NOT EXISTS "DefaultSetting" (
     "topP" DOUBLE PRECISION NOT NULL DEFAULT 0.9,
     "topK" INTEGER NOT NULL DEFAULT 40,
     "repeatPenalty" DOUBLE PRECISION NOT NULL DEFAULT 1.1,
-    "reasoningMode" TEXT NOT NULL DEFAULT 'normal',
+    "reasoningMode" VARCHAR(255) NOT NULL DEFAULT 'normal',
     "ragTopK" INTEGER NOT NULL DEFAULT 5,
     "ragMinSimilarity" DOUBLE PRECISION NOT NULL DEFAULT 0.45,
-    "embeddingModel" TEXT NOT NULL DEFAULT '',
+    "embeddingModel" VARCHAR(255) NOT NULL DEFAULT '',
     "chunkSize" INTEGER NOT NULL DEFAULT 500,
     "chunkOverlap" INTEGER NOT NULL DEFAULT 100,
-    "visionModel" TEXT,
+    "visionModel" VARCHAR(255),
     "visionPrompt" TEXT,
-    "brandColor" TEXT NOT NULL DEFAULT 'default',
+    "brandColor" VARCHAR(255) NOT NULL DEFAULT 'default',
     "customLogoText" TEXT DEFAULT 'LL',
     "customLogoImage" TEXT,
     "customTitle" TEXT DEFAULT 'LM LIGHT',
     "sidebarItems" JSONB,
     "sqlConnection" JSONB,
     "toolSettings" JSONB,
-    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP
+    "createdAt" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
-CREATE TABLE IF NOT EXISTS "Tag" (
-    "id" TEXT NOT NULL PRIMARY KEY,
-    "name" TEXT NOT NULL UNIQUE,
-    "description" TEXT,
-    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP
+CREATE TABLE IF NOT EXISTS "SystemSetting" (
+    "id" VARCHAR(64) NOT NULL PRIMARY KEY DEFAULT 'default',
+    "brandColor" VARCHAR(255) NOT NULL DEFAULT 'default',
+    "customLogoText" TEXT DEFAULT 'LL',
+    "customLogoImage" TEXT,
+    "customTitle" TEXT DEFAULT 'LM LIGHT',
+    "sidebarItems" JSONB,
+    "allowedIframeOrigins" JSONB,
+    "embedEnabled" BOOLEAN NOT NULL DEFAULT false,
+    "updatedBy" VARCHAR(255),
+    "createdAt" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
-CREATE TABLE IF NOT EXISTS "UserTag" (
-    "id" TEXT NOT NULL PRIMARY KEY,
-    "userId" TEXT NOT NULL,
-    "tagId" TEXT NOT NULL,
-    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE ("userId", "tagId")
-);
-
--- Tag-based ACL on first-level shared/ subdirectories. One row per
--- "claimed" team folder. Drives both file-manager visibility and the
--- per-dir LLM tools (read_shared_<dir>, list_shared_<dir>) generated
--- in chat. Untagged shared subdirs stay readable by everyone (legacy)
--- but can't be exposed to the LLM until tagged via the file manager.
-CREATE TABLE IF NOT EXISTS "SharedDirAcl" (
-    "path" VARCHAR(512) NOT NULL PRIMARY KEY,
-    "shareTagId" VARCHAR(255) NOT NULL,
-    "createdBy" VARCHAR(255) NOT NULL,
-    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE TABLE IF NOT EXISTS "LdapGroupMapping" (
-    "id" TEXT NOT NULL PRIMARY KEY,
-    "ldapGroupDn" VARCHAR(500) NOT NULL UNIQUE,
-    "tagId" TEXT,
-    "role" "UserRole",
-    "description" TEXT,
-    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE TABLE IF NOT EXISTS "Bot" (
-    "id" TEXT NOT NULL PRIMARY KEY,
-    "userId" TEXT NOT NULL,
-    "name" TEXT NOT NULL,
-    "description" TEXT,
-    "url" TEXT,
-    "shareType" "ShareType" NOT NULL DEFAULT 'PRIVATE',
-    "shareTagId" TEXT,
-    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE TABLE IF NOT EXISTS "Document" (
-    "id" TEXT NOT NULL PRIMARY KEY,
-    "botId" TEXT NOT NULL,
-    "name" TEXT NOT NULL,
-    "type" "DocumentType" NOT NULL DEFAULT 'PDF',
-    "url" TEXT,
-    "metadata" JSONB,
-    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE TABLE IF NOT EXISTS "Chat" (
-    "id" TEXT NOT NULL PRIMARY KEY,
-    "userId" TEXT NOT NULL,
-    "model" TEXT NOT NULL,
-    "sessionId" TEXT NOT NULL,
-    "botId" TEXT,
-    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE TABLE IF NOT EXISTS "Message" (
-    "id" TEXT NOT NULL PRIMARY KEY,
-    "chatId" TEXT NOT NULL,
-    "role" "MessageRole" NOT NULL,
+CREATE TABLE IF NOT EXISTS "Prompt" (
+    "id" VARCHAR(255) NOT NULL PRIMARY KEY,
+    "title" VARCHAR(255) NOT NULL,
     "content" TEXT NOT NULL,
-    "metadata" JSONB,
-    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE TABLE IF NOT EXISTS "ApprovalFlow" (
-    "id" TEXT NOT NULL PRIMARY KEY,
-    "name" TEXT NOT NULL,
-    "description" TEXT,
-    "requesterIds" JSONB NOT NULL,
-    "notificationWebhookUrl" TEXT,
-    "createdBy" TEXT NOT NULL,
-    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE TABLE IF NOT EXISTS "ApprovalFlowStep" (
-    "id" TEXT NOT NULL PRIMARY KEY,
-    "flowId" TEXT NOT NULL,
-    "stepOrder" INTEGER NOT NULL,
-    "label" TEXT,
-    "approverIds" JSONB NOT NULL,
-    UNIQUE ("flowId", "stepOrder")
-);
-
-CREATE TABLE IF NOT EXISTS "ApprovalRequest" (
-    "id" TEXT NOT NULL PRIMARY KEY,
-    "flowId" TEXT NOT NULL,
-    "title" TEXT NOT NULL,
-    "body" TEXT,
-    "attachments" JSONB,
-    "requestedBy" TEXT NOT NULL,
-    "status" "ApprovalStatus" NOT NULL DEFAULT 'PENDING',
-    "currentStep" INTEGER NOT NULL DEFAULT 1,
-    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE TABLE IF NOT EXISTS "ApprovalStepResult" (
-    "id" TEXT NOT NULL PRIMARY KEY,
-    "requestId" TEXT NOT NULL,
-    "stepOrder" INTEGER NOT NULL,
-    "status" "ApprovalStatus" NOT NULL,
-    "approvedBy" TEXT,
-    "comment" TEXT,
-    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE ("requestId", "stepOrder")
+    "userId" VARCHAR(255) NOT NULL,
+    "shareType" "ShareType" NOT NULL DEFAULT 'PRIVATE',
+    "shareTagId" VARCHAR(255),
+    "createdAt" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS "SavedSqlConnection" (
-    "id" TEXT NOT NULL PRIMARY KEY,
-    "name" TEXT NOT NULL,
-    "dbType" TEXT NOT NULL DEFAULT 'postgresql',
-    "host" TEXT NOT NULL DEFAULT 'localhost',
+    "id" VARCHAR(255) NOT NULL PRIMARY KEY,
+    "name" VARCHAR(255) NOT NULL,
+    "dbType" VARCHAR(32) NOT NULL DEFAULT 'postgresql',
+    "host" VARCHAR(255) NOT NULL DEFAULT 'localhost',
     "port" INTEGER NOT NULL DEFAULT 5432,
-    "database" TEXT NOT NULL,
-    "dbUser" TEXT NOT NULL,
-    "password" TEXT NOT NULL,
-    "schema" TEXT NOT NULL DEFAULT 'public',
-    "userId" TEXT NOT NULL,
-    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
--- 既存テーブルへの dbType 追加 (auto-migrate 兼ねた idempotent ALTER)
-DO `$`$ BEGIN ALTER TABLE "SavedSqlConnection" ADD COLUMN IF NOT EXISTS "dbType" TEXT NOT NULL DEFAULT 'postgresql'; EXCEPTION WHEN undefined_table THEN null; END `$`$;
-
-CREATE TABLE IF NOT EXISTS "Prompt" (
-    "id" TEXT NOT NULL PRIMARY KEY,
-    "title" TEXT NOT NULL,
-    "content" TEXT NOT NULL,
-    "userId" TEXT NOT NULL,
-    "shareType" "ShareType" NOT NULL DEFAULT 'PRIVATE',
-    "shareTagId" TEXT,
-    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE TABLE IF NOT EXISTS "HelpdeskRoom" (
-    "id" TEXT NOT NULL PRIMARY KEY,
-    "name" TEXT NOT NULL,
-    "description" TEXT,
-    "botId" TEXT,
-    "model" TEXT,
-    "modelParams" JSONB,
-    "ragParams" JSONB,
-    "systemPrompt" TEXT,
-    "aiPaused" BOOLEAN NOT NULL DEFAULT false,
-    "notificationWebhookUrl" TEXT,
-    "createdBy" TEXT NOT NULL,
-    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE TABLE IF NOT EXISTS "HelpdeskMember" (
-    "id" TEXT NOT NULL PRIMARY KEY,
-    "roomId" TEXT NOT NULL,
-    "userId" TEXT NOT NULL,
-    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE TABLE IF NOT EXISTS "HelpdeskReadState" (
-    "id" TEXT NOT NULL PRIMARY KEY,
-    "roomId" TEXT NOT NULL,
-    "userId" TEXT NOT NULL,
-    "memberId" TEXT,
-    "lastReadAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP
+    "database" VARCHAR(255) NOT NULL,
+    "dbUser" VARCHAR(255) NOT NULL,
+    "password" VARCHAR(255) NOT NULL,
+    "schema" VARCHAR(255) NOT NULL DEFAULT 'public',
+    "userId" VARCHAR(255) NOT NULL,
+    "createdAt" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS "ApiConnection" (
@@ -632,59 +575,200 @@ CREATE TABLE IF NOT EXISTS "ApiConnection" (
     "config" JSONB NOT NULL,
     "mcpEnabled" BOOLEAN NOT NULL DEFAULT false,
     "createdBy" VARCHAR(255) NOT NULL,
-    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP
+    "createdAt" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS "Pipeline" (
-    "id" TEXT NOT NULL PRIMARY KEY,
-    "name" TEXT NOT NULL,
+    "id" VARCHAR(255) NOT NULL PRIMARY KEY,
+    "name" VARCHAR(255) NOT NULL,
     "description" TEXT,
     "config" JSONB,
+    "createdBy" VARCHAR(255) NOT NULL,
     "shareType" "ShareType" NOT NULL DEFAULT 'PRIVATE',
-    "shareTagId" TEXT,
-    "createdBy" TEXT NOT NULL,
-    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP
+    "shareTagId" VARCHAR(255),
+    "createdAt" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS "PipelineStep" (
-    "id" TEXT NOT NULL PRIMARY KEY,
-    "pipelineId" TEXT NOT NULL,
+    "id" VARCHAR(255) NOT NULL PRIMARY KEY,
+    "pipelineId" VARCHAR(255) NOT NULL,
     "stepOrder" INTEGER NOT NULL,
-    "name" TEXT NOT NULL,
-    "type" TEXT NOT NULL,
+    "name" VARCHAR(255) NOT NULL,
+    "type" VARCHAR(50) NOT NULL,
     "config" JSONB NOT NULL,
-    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP
+    "createdAt" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS "PipelineRun" (
-    "id" TEXT NOT NULL PRIMARY KEY,
-    "pipelineId" TEXT NOT NULL,
-    "status" TEXT NOT NULL DEFAULT 'pending',
-    "startedAt" TIMESTAMP(3),
-    "completedAt" TIMESTAMP(3),
+    "id" VARCHAR(255) NOT NULL PRIMARY KEY,
+    "pipelineId" VARCHAR(255) NOT NULL,
+    "status" VARCHAR(20) NOT NULL DEFAULT 'pending',
+    "startedAt" TIMESTAMP,
+    "completedAt" TIMESTAMP,
     "result" JSONB,
     "error" TEXT,
-    "triggeredBy" TEXT NOT NULL,
-    "runAs" TEXT,
-    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP
+    "triggeredBy" VARCHAR(255) NOT NULL,
+    "runAs" VARCHAR(255),
+    "createdAt" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS "PipelineSchedule" (
-    "id" TEXT NOT NULL PRIMARY KEY,
-    "pipelineId" TEXT NOT NULL,
-    "cronExpr" TEXT NOT NULL,
+    "id" VARCHAR(255) NOT NULL PRIMARY KEY,
+    "pipelineId" VARCHAR(255) NOT NULL,
+    "cronExpr" VARCHAR(100) NOT NULL,
     "enabled" BOOLEAN NOT NULL DEFAULT true,
-    "lastRunAt" TIMESTAMP(3),
-    "nextRunAt" TIMESTAMP(3),
-    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP
+    "lastRunAt" TIMESTAMP,
+    "nextRunAt" TIMESTAMP,
+    "createdAt" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
--- Observability tables (structured logs)
-CREATE TABLE IF NOT EXISTS "AppLog" (
+CREATE TABLE IF NOT EXISTS "SharedDirAcl" (
+    "path" VARCHAR(512) NOT NULL PRIMARY KEY,
+    "shareTagId" VARCHAR(255) NOT NULL,
+    "createdBy" VARCHAR(255) NOT NULL,
+    "createdAt" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS "OAuthConnection" (
+    "id" VARCHAR(255) NOT NULL PRIMARY KEY,
+    "userId" VARCHAR(255) NOT NULL,
+    "provider" VARCHAR(64) NOT NULL,
+    "accountLabel" VARCHAR(255) NOT NULL DEFAULT 'default',
+    "accountEmail" VARCHAR(255),
+    "accessToken" TEXT NOT NULL,
+    "refreshToken" TEXT,
+    "expiresAt" TIMESTAMP,
+    "scopes" JSONB,
+    "connectionConfig" JSONB,
+    "createdAt" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT "OAuthConnection_user_provider_label_key" UNIQUE ("userId", "provider", "accountLabel")
+);
+
+CREATE TABLE IF NOT EXISTS "SqlDashboard" (
+    "id" VARCHAR(255) NOT NULL PRIMARY KEY,
+    "name" VARCHAR(255) NOT NULL,
+    "description" TEXT,
+    "layout" JSONB NOT NULL,
+    "refreshInterval" INTEGER,
+    "createdBy" VARCHAR(255) NOT NULL,
+    "createdAt" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+-- ── approval schema ─────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS approval."ApprovalFlow" (
+    "id" VARCHAR(255) NOT NULL PRIMARY KEY,
+    "name" VARCHAR(255) NOT NULL,
+    "description" TEXT,
+    "requesterIds" JSONB NOT NULL,
+    "notificationWebhookUrl" TEXT,
+    "createdBy" VARCHAR(255) NOT NULL,
+    "createdAt" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS approval."ApprovalFlowStep" (
+    "id" VARCHAR(255) NOT NULL PRIMARY KEY,
+    "flowId" VARCHAR(255) NOT NULL,
+    "stepOrder" INTEGER NOT NULL,
+    "label" TEXT,
+    "approverIds" JSONB NOT NULL,
+    CONSTRAINT "ApprovalFlowStep_flowId_stepOrder_key" UNIQUE ("flowId", "stepOrder")
+);
+
+CREATE TABLE IF NOT EXISTS approval."ApprovalRequest" (
+    "id" VARCHAR(255) NOT NULL PRIMARY KEY,
+    "flowId" VARCHAR(255) NOT NULL,
+    "title" VARCHAR(255) NOT NULL,
+    "body" TEXT,
+    "attachments" JSONB,
+    "requestedBy" VARCHAR(255) NOT NULL,
+    "status" "ApprovalStatus" NOT NULL DEFAULT 'PENDING',
+    "currentStep" INTEGER NOT NULL DEFAULT 1,
+    "createdAt" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS approval."ApprovalStepResult" (
+    "id" VARCHAR(255) NOT NULL PRIMARY KEY,
+    "requestId" VARCHAR(255) NOT NULL,
+    "stepOrder" INTEGER NOT NULL,
+    "status" "ApprovalStatus" NOT NULL,
+    "approvedBy" VARCHAR(255),
+    "comment" TEXT,
+    "createdAt" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT "ApprovalStepResult_requestId_stepOrder_key" UNIQUE ("requestId", "stepOrder")
+);
+
+-- ── helpdesk schema ─────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS helpdesk."HelpdeskRoom" (
+    "id" VARCHAR(255) NOT NULL PRIMARY KEY,
+    "name" VARCHAR(255) NOT NULL,
+    "description" TEXT,
+    "botId" VARCHAR(255),
+    "model" VARCHAR(255),
+    "modelParams" JSONB,
+    "ragParams" JSONB,
+    "systemPrompt" TEXT,
+    "aiPaused" BOOLEAN NOT NULL DEFAULT false,
+    "notificationWebhookUrl" TEXT,
+    "createdBy" VARCHAR(255) NOT NULL,
+    "createdAt" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS helpdesk."HelpdeskMember" (
+    "id" VARCHAR(255) NOT NULL PRIMARY KEY,
+    "roomId" VARCHAR(255) NOT NULL,
+    "userId" VARCHAR(255) NOT NULL,
+    "createdAt" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS helpdesk."HelpdeskReadState" (
+    "id" VARCHAR(255) NOT NULL PRIMARY KEY,
+    "roomId" VARCHAR(255) NOT NULL,
+    "userId" VARCHAR(255) NOT NULL,
+    "memberId" VARCHAR(255),
+    "lastReadAt" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+-- ── vision schema ───────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS vision."YoloModel" (
+    "id" VARCHAR(255) NOT NULL PRIMARY KEY,
+    "name" VARCHAR(255) NOT NULL,
+    "version" VARCHAR(64) NOT NULL,
+    "fileName" VARCHAR(255) NOT NULL,
+    "baseModel" VARCHAR(255),
+    "classes" JSONB,
+    "metricsJson" JSONB,
+    "notes" TEXT,
+    "isActive" BOOLEAN NOT NULL DEFAULT true,
+    "createdBy" VARCHAR(255) NOT NULL,
+    "createdAt" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS vision."VisionAutomationRule" (
+    "id" VARCHAR(255) NOT NULL PRIMARY KEY,
+    "name" VARCHAR(255) NOT NULL,
+    "enabled" BOOLEAN NOT NULL DEFAULT true,
+    "sourceConfig" JSONB NOT NULL,
+    "detectConfig" JSONB NOT NULL,
+    "triggerCondition" JSONB NOT NULL,
+    "pipelineId" VARCHAR(255),
+    "notifyConfig" JSONB,
+    "schedule" VARCHAR(64),
+    "createdBy" VARCHAR(255) NOT NULL,
+    "createdAt" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+-- ── log schema ──────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS log."AppLog" (
     "id" SERIAL PRIMARY KEY,
-    "timestamp" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "timestamp" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "level" VARCHAR(10) NOT NULL,
     "logger" VARCHAR(255),
     "message" TEXT NOT NULL,
@@ -696,9 +780,9 @@ CREATE TABLE IF NOT EXISTS "AppLog" (
     "extra" JSONB
 );
 
-CREATE TABLE IF NOT EXISTS "AuditLog" (
+CREATE TABLE IF NOT EXISTS log."AuditLog" (
     "id" SERIAL PRIMARY KEY,
-    "timestamp" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "timestamp" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "userId" VARCHAR(255),
     "userEmail" VARCHAR(255),
     "userName" VARCHAR(255),
@@ -714,8 +798,22 @@ CREATE TABLE IF NOT EXISTS "AuditLog" (
     "payload" JSONB
 );
 
--- pgvector schema
-CREATE SCHEMA IF NOT EXISTS pgvector;
+-- ── datalake schema (pipeline 収集 dataset) ────────────────────────────────
+CREATE TABLE IF NOT EXISTS datalake.datasets (
+    "id" VARCHAR(255) PRIMARY KEY,
+    "name" VARCHAR(255) NOT NULL,
+    "description" TEXT,
+    "ownerId" VARCHAR(255) NOT NULL,
+    "physicalTable" VARCHAR(63) NOT NULL UNIQUE,
+    "columns" JSONB NOT NULL,
+    "rowCount" INTEGER NOT NULL DEFAULT 0,
+    "sizeBytes" INTEGER NOT NULL DEFAULT 0,
+    "sourcePipelineId" VARCHAR(255),
+    "lastUpdatedAt" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "createdAt" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+-- ── pgvector schema (RAG embedding) ─────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS pgvector.embeddings (
     id SERIAL PRIMARY KEY,
     bot_id VARCHAR(255) NOT NULL,
@@ -728,26 +826,9 @@ CREATE TABLE IF NOT EXISTS pgvector.embeddings (
     created_at TIMESTAMP DEFAULT NOW()
 );
 
--- Data Lake schema (pipeline-collected structured datasets)
-CREATE SCHEMA IF NOT EXISTS datalake;
-CREATE TABLE IF NOT EXISTS datalake.datasets (
-    "id" VARCHAR(255) PRIMARY KEY,
-    "name" VARCHAR(255) NOT NULL,
-    "description" TEXT,
-    "ownerId" VARCHAR(255) NOT NULL,
-    "physicalTable" VARCHAR(63) NOT NULL UNIQUE,
-    "columns" JSONB NOT NULL,
-    "rowCount" INTEGER NOT NULL DEFAULT 0,
-    "sizeBytes" INTEGER NOT NULL DEFAULT 0,
-    "sourcePipelineId" VARCHAR(255),
-    "lastUpdatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-
--- インデックス
+-- ── Indexes ─────────────────────────────────────────────────────────────────
 CREATE INDEX IF NOT EXISTS "UserTag_userId_idx" ON "UserTag"("userId");
 CREATE INDEX IF NOT EXISTS "UserTag_tagId_idx" ON "UserTag"("tagId");
-CREATE UNIQUE INDEX IF NOT EXISTS "LdapGroupMapping_ldapGroupDn_key" ON "LdapGroupMapping"("ldapGroupDn");
 CREATE INDEX IF NOT EXISTS "LdapGroupMapping_tagId_idx" ON "LdapGroupMapping"("tagId");
 CREATE INDEX IF NOT EXISTS "Bot_userId_idx" ON "Bot"("userId");
 CREATE INDEX IF NOT EXISTS "Bot_shareTagId_idx" ON "Bot"("shareTagId");
@@ -757,21 +838,9 @@ CREATE INDEX IF NOT EXISTS "Chat_userId_model_idx" ON "Chat"("userId", "model");
 CREATE INDEX IF NOT EXISTS "Chat_userId_idx" ON "Chat"("userId");
 CREATE INDEX IF NOT EXISTS "Chat_botId_idx" ON "Chat"("botId");
 CREATE INDEX IF NOT EXISTS "Message_chatId_createdAt_idx" ON "Message"("chatId", "createdAt");
-CREATE INDEX IF NOT EXISTS "ApprovalFlow_createdBy_idx" ON "ApprovalFlow"("createdBy");
-CREATE INDEX IF NOT EXISTS "ApprovalFlowStep_flowId_idx" ON "ApprovalFlowStep"("flowId");
-CREATE INDEX IF NOT EXISTS "ApprovalRequest_flowId_idx" ON "ApprovalRequest"("flowId");
-CREATE INDEX IF NOT EXISTS "ApprovalRequest_requestedBy_idx" ON "ApprovalRequest"("requestedBy");
-CREATE INDEX IF NOT EXISTS "ApprovalStepResult_requestId_idx" ON "ApprovalStepResult"("requestId");
 CREATE INDEX IF NOT EXISTS "SavedSqlConnection_userId_idx" ON "SavedSqlConnection"("userId");
 CREATE INDEX IF NOT EXISTS "Prompt_userId_idx" ON "Prompt"("userId");
 CREATE INDEX IF NOT EXISTS "Prompt_shareTagId_idx" ON "Prompt"("shareTagId");
-CREATE INDEX IF NOT EXISTS "HelpdeskRoom_createdBy_idx" ON "HelpdeskRoom"("createdBy");
-CREATE INDEX IF NOT EXISTS "HelpdeskMember_roomId_idx" ON "HelpdeskMember"("roomId");
-CREATE INDEX IF NOT EXISTS "HelpdeskMember_userId_idx" ON "HelpdeskMember"("userId");
-CREATE UNIQUE INDEX IF NOT EXISTS "HelpdeskMember_roomId_userId_key" ON "HelpdeskMember"("roomId", "userId");
-CREATE INDEX IF NOT EXISTS "HelpdeskReadState_roomId_idx" ON "HelpdeskReadState"("roomId");
-CREATE INDEX IF NOT EXISTS "HelpdeskReadState_userId_idx" ON "HelpdeskReadState"("userId");
-CREATE UNIQUE INDEX IF NOT EXISTS "HelpdeskReadState_roomId_userId_key" ON "HelpdeskReadState"("roomId", "userId", "memberId");
 CREATE INDEX IF NOT EXISTS "ApiConnection_createdBy_idx" ON "ApiConnection"("createdBy");
 CREATE INDEX IF NOT EXISTS "ApiConnection_type_idx" ON "ApiConnection"("type");
 CREATE INDEX IF NOT EXISTS "Pipeline_createdBy_idx" ON "Pipeline"("createdBy");
@@ -780,106 +849,37 @@ CREATE INDEX IF NOT EXISTS "PipelineStep_pipelineId_idx" ON "PipelineStep"("pipe
 CREATE INDEX IF NOT EXISTS "PipelineRun_pipelineId_idx" ON "PipelineRun"("pipelineId");
 CREATE INDEX IF NOT EXISTS "PipelineRun_status_idx" ON "PipelineRun"("status");
 CREATE INDEX IF NOT EXISTS "PipelineSchedule_pipelineId_idx" ON "PipelineSchedule"("pipelineId");
+
+CREATE INDEX IF NOT EXISTS "ApprovalFlow_createdBy_idx" ON approval."ApprovalFlow"("createdBy");
+CREATE INDEX IF NOT EXISTS "ApprovalFlowStep_flowId_idx" ON approval."ApprovalFlowStep"("flowId");
+CREATE INDEX IF NOT EXISTS "ApprovalRequest_flowId_idx" ON approval."ApprovalRequest"("flowId");
+CREATE INDEX IF NOT EXISTS "ApprovalRequest_requestedBy_idx" ON approval."ApprovalRequest"("requestedBy");
+CREATE INDEX IF NOT EXISTS "ApprovalStepResult_requestId_idx" ON approval."ApprovalStepResult"("requestId");
+
+CREATE INDEX IF NOT EXISTS "HelpdeskRoom_createdBy_idx" ON helpdesk."HelpdeskRoom"("createdBy");
+CREATE INDEX IF NOT EXISTS "HelpdeskMember_roomId_idx" ON helpdesk."HelpdeskMember"("roomId");
+CREATE INDEX IF NOT EXISTS "HelpdeskMember_userId_idx" ON helpdesk."HelpdeskMember"("userId");
+CREATE UNIQUE INDEX IF NOT EXISTS "HelpdeskMember_roomId_userId_key" ON helpdesk."HelpdeskMember"("roomId", "userId");
+CREATE INDEX IF NOT EXISTS "HelpdeskReadState_roomId_idx" ON helpdesk."HelpdeskReadState"("roomId");
+CREATE INDEX IF NOT EXISTS "HelpdeskReadState_userId_idx" ON helpdesk."HelpdeskReadState"("userId");
+-- memberId 含めて 3 列 uniq (NULL=room-level、設定時=per-member)
+CREATE UNIQUE INDEX IF NOT EXISTS "HelpdeskReadState_roomId_userId_key" ON helpdesk."HelpdeskReadState"("roomId", "userId", "memberId");
+
+CREATE INDEX IF NOT EXISTS "AppLog_timestamp_idx" ON log."AppLog"("timestamp");
+CREATE INDEX IF NOT EXISTS "AppLog_level_timestamp_idx" ON log."AppLog"("level", "timestamp");
+CREATE INDEX IF NOT EXISTS "AppLog_userId_idx" ON log."AppLog"("userId");
+CREATE INDEX IF NOT EXISTS "AuditLog_timestamp_idx" ON log."AuditLog"("timestamp");
+CREATE INDEX IF NOT EXISTS "AuditLog_userId_timestamp_idx" ON log."AuditLog"("userId", "timestamp");
+CREATE INDEX IF NOT EXISTS "AuditLog_resourceType_idx" ON log."AuditLog"("resourceType");
+
+CREATE UNIQUE INDEX IF NOT EXISTS "datasets_owner_name_key" ON datalake.datasets("ownerId", "name");
+CREATE INDEX IF NOT EXISTS "datasets_owner_idx" ON datalake.datasets("ownerId");
+
 CREATE INDEX IF NOT EXISTS idx_bot_user ON pgvector.embeddings (bot_id, user_id);
 CREATE INDEX IF NOT EXISTS idx_document ON pgvector.embeddings (document_id);
 CREATE INDEX IF NOT EXISTS idx_embeddings_hnsw ON pgvector.embeddings USING hnsw (embedding vector_cosine_ops);
 
--- Observability indexes
-CREATE INDEX IF NOT EXISTS "AppLog_timestamp_idx" ON "AppLog"("timestamp");
-CREATE INDEX IF NOT EXISTS "AppLog_level_timestamp_idx" ON "AppLog"("level", "timestamp");
-CREATE INDEX IF NOT EXISTS "AppLog_userId_idx" ON "AppLog"("userId");
-CREATE INDEX IF NOT EXISTS "AuditLog_timestamp_idx" ON "AuditLog"("timestamp");
-CREATE INDEX IF NOT EXISTS "AuditLog_userId_timestamp_idx" ON "AuditLog"("userId", "timestamp");
-CREATE INDEX IF NOT EXISTS "AuditLog_resourceType_idx" ON "AuditLog"("resourceType");
-
--- Data Lake indexes
-CREATE UNIQUE INDEX IF NOT EXISTS "datasets_owner_name_key" ON datalake.datasets("ownerId", "name");
-CREATE INDEX IF NOT EXISTS "datasets_owner_idx" ON datalake.datasets("ownerId");
-
--- Bot columns (upgrade)
-DO `$`$ BEGIN
-    ALTER TABLE "Bot" ADD COLUMN IF NOT EXISTS "url" TEXT;
-EXCEPTION WHEN undefined_table THEN null; WHEN duplicate_column THEN null; END `$`$;
-DO `$`$ BEGIN
-    ALTER TABLE "Bot" ADD COLUMN IF NOT EXISTS "shareTagId" TEXT;
-EXCEPTION WHEN undefined_table THEN null; WHEN duplicate_column THEN null; END `$`$;
-
--- Tag columns (upgrade)
-DO `$`$ BEGIN
-    ALTER TABLE "Tag" ADD COLUMN IF NOT EXISTS "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP;
-EXCEPTION WHEN undefined_table THEN null; WHEN duplicate_column THEN null; END `$`$;
-DO `$`$ BEGIN
-    ALTER TABLE "Tag" ADD COLUMN IF NOT EXISTS "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP;
-EXCEPTION WHEN undefined_table THEN null; WHEN duplicate_column THEN null; END `$`$;
-
--- Auth provider column (AD integration, for existing installs)
-DO `$`$ BEGIN
-    ALTER TABLE "User" ADD COLUMN IF NOT EXISTS "authProvider" TEXT NOT NULL DEFAULT 'local';
-EXCEPTION WHEN undefined_table THEN null; WHEN duplicate_column THEN null; END `$`$;
-DO `$`$ BEGIN
-    ALTER TABLE "User" ADD COLUMN IF NOT EXISTS "ldapAttributes" JSONB;
-EXCEPTION WHEN undefined_table THEN null; WHEN duplicate_column THEN null; END `$`$;
-
--- Approval notification webhook URL
-DO `$`$ BEGIN
-    ALTER TABLE "ApprovalFlow" ADD COLUMN IF NOT EXISTS "notificationWebhookUrl" TEXT;
-EXCEPTION WHEN undefined_table THEN null; WHEN duplicate_column THEN null; END `$`$;
-
--- Brand customization columns (upgrade)
-DO `$`$ BEGIN
-    ALTER TABLE "DefaultSetting" ADD COLUMN IF NOT EXISTS "brandColor" TEXT NOT NULL DEFAULT 'default';
-EXCEPTION WHEN undefined_table THEN null; WHEN duplicate_column THEN null; END `$`$;
-DO `$`$ BEGIN
-    ALTER TABLE "DefaultSetting" ADD COLUMN IF NOT EXISTS "customLogoText" TEXT DEFAULT 'LL';
-EXCEPTION WHEN undefined_table THEN null; WHEN duplicate_column THEN null; END `$`$;
-DO `$`$ BEGIN
-    ALTER TABLE "DefaultSetting" ADD COLUMN IF NOT EXISTS "customLogoImage" TEXT;
-EXCEPTION WHEN undefined_table THEN null; WHEN duplicate_column THEN null; END `$`$;
-DO `$`$ BEGIN
-    ALTER TABLE "DefaultSetting" ADD COLUMN IF NOT EXISTS "customTitle" TEXT DEFAULT 'LM LIGHT';
-EXCEPTION WHEN undefined_table THEN null; WHEN duplicate_column THEN null; END `$`$;
-DO `$`$ BEGIN
-    ALTER TABLE "DefaultSetting" ADD COLUMN IF NOT EXISTS "sidebarItems" JSONB;
-EXCEPTION WHEN undefined_table THEN null; WHEN duplicate_column THEN null; END `$`$;
-DO `$`$ BEGIN
-    ALTER TABLE "DefaultSetting" ADD COLUMN IF NOT EXISTS "toolSettings" JSONB;
-EXCEPTION WHEN undefined_table THEN null; WHEN duplicate_column THEN null; END `$`$;
-DO `$`$ BEGIN
-    ALTER TABLE "DefaultSetting" ADD COLUMN IF NOT EXISTS "visionModel" VARCHAR(255);
-EXCEPTION WHEN undefined_table THEN null; WHEN duplicate_column THEN null; END `$`$;
-DO `$`$ BEGIN
-    ALTER TABLE "DefaultSetting" ADD COLUMN IF NOT EXISTS "visionPrompt" TEXT;
-EXCEPTION WHEN undefined_table THEN null; WHEN duplicate_column THEN null; END `$`$;
-
--- SavedSqlConnection credential columns: backfill nulls + restore NOT NULL.
--- Idempotent — runs harmlessly on already-migrated DBs.
-DO `$`$ BEGIN UPDATE "SavedSqlConnection" SET "host" = COALESCE("host", 'localhost') WHERE "host" IS NULL;
-EXCEPTION WHEN undefined_table THEN null; END `$`$;
-DO `$`$ BEGIN UPDATE "SavedSqlConnection" SET "port" = COALESCE("port", 5432) WHERE "port" IS NULL;
-EXCEPTION WHEN undefined_table THEN null; END `$`$;
-DO `$`$ BEGIN UPDATE "SavedSqlConnection" SET "dbUser" = COALESCE("dbUser", '') WHERE "dbUser" IS NULL;
-EXCEPTION WHEN undefined_table THEN null; END `$`$;
-DO `$`$ BEGIN UPDATE "SavedSqlConnection" SET "password" = COALESCE("password", '') WHERE "password" IS NULL;
-EXCEPTION WHEN undefined_table THEN null; END `$`$;
-DO `$`$ BEGIN ALTER TABLE "SavedSqlConnection" ALTER COLUMN "host" SET NOT NULL;
-EXCEPTION WHEN undefined_table THEN null; END `$`$;
-DO `$`$ BEGIN ALTER TABLE "SavedSqlConnection" ALTER COLUMN "port" SET NOT NULL;
-EXCEPTION WHEN undefined_table THEN null; END `$`$;
-DO `$`$ BEGIN ALTER TABLE "SavedSqlConnection" ALTER COLUMN "dbUser" SET NOT NULL;
-EXCEPTION WHEN undefined_table THEN null; END `$`$;
-DO `$`$ BEGIN ALTER TABLE "SavedSqlConnection" ALTER COLUMN "password" SET NOT NULL;
-EXCEPTION WHEN undefined_table THEN null; END `$`$;
--- PostgreSQL schema selection (previously always hard-coded to 'public').
-DO `$`$ BEGIN ALTER TABLE "SavedSqlConnection" ADD COLUMN IF NOT EXISTS "schema" TEXT NOT NULL DEFAULT 'public';
-EXCEPTION WHEN undefined_table THEN null; END `$`$;
-
--- Pipeline run-as-owner audit field (added with tag-share rollout).
-DO `$`$ BEGIN
-    ALTER TABLE "PipelineRun" ADD COLUMN IF NOT EXISTS "runAs" TEXT;
-EXCEPTION WHEN undefined_table THEN null;
-END `$`$;
-
--- 管理者ユーザー (admin@local / admin123)
+-- ── 初期 admin user (admin@local / admin123) ────────────────────────────────
 INSERT INTO "User" ("id", "email", "name", "hashedPassword", "role", "status", "updatedAt")
 VALUES (
     'admin-user-id',
@@ -890,20 +890,14 @@ VALUES (
     'ACTIVE',
     CURRENT_TIMESTAMP
 ) ON CONFLICT ("id") DO NOTHING;
-
--- 権限付与
-GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO $DB_USER;
-GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO $DB_USER;
-GRANT ALL PRIVILEGES ON SCHEMA pgvector TO $DB_USER;
-GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA pgvector TO $DB_USER;
-GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA pgvector TO $DB_USER;
-GRANT ALL PRIVILEGES ON SCHEMA datalake TO $DB_USER;
-GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA datalake TO $DB_USER;
-GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA datalake TO $DB_USER;
 "@
 
     $ErrorActionPreference = "Continue"
-    $null = $SQL_MIGRATION | psql -q -U postgres -p $DB_PORT -d $DB_NAME 2>$null
+    # DB owner (= digitalbase) として実行することで作成 object の owner も
+    # digitalbase になり、追加 GRANT が不要になる (db_setup.sh と挙動を統一)。
+    $env:PGPASSWORD = $DB_PASSWORD
+    $null = $SQL_MIGRATION | psql -q -U $DB_USER -p $DB_PORT -d $DB_NAME 2>$null
+    Remove-Item Env:PGPASSWORD -ErrorAction SilentlyContinue
     $ErrorActionPreference = "Stop"
     Write-Success "データベースマイグレーションが完了しました"
 } else {
