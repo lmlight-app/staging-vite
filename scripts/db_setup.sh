@@ -293,6 +293,20 @@ CREATE TABLE IF NOT EXISTS "SharedDirAcl" (
     "createdAt" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
+-- 多 protocol ファイル接続 (SFTP/SMB/FTP/S3/GCS/Azure/WebDAV/HTTP の credential 接続)。
+-- OAuth 系 (GDrive/OneDrive/Dropbox/Box/SharePoint) は OAuthConnection を流用。
+CREATE TABLE IF NOT EXISTS "FileConnection" (
+    "id" VARCHAR(255) NOT NULL PRIMARY KEY,
+    "name" VARCHAR(255) NOT NULL,
+    "type" VARCHAR(32) NOT NULL,
+    "config" JSONB NOT NULL,
+    "ownerId" VARCHAR(255) NOT NULL,
+    "shareType" "ShareType" NOT NULL DEFAULT 'PRIVATE',
+    "shareTagId" VARCHAR(255),
+    "createdAt" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE TABLE IF NOT EXISTS "OAuthConnection" (
     "id" VARCHAR(255) NOT NULL PRIMARY KEY,
     "userId" VARCHAR(255) NOT NULL,
