@@ -13,7 +13,29 @@ DB_NAME="${DB_NAME:-digitalbase}"
 echo "Setting up AI Server database..."
 
 if ! command -v psql &>/dev/null; then
-    echo "❌ psql not found. Please install PostgreSQL first."
+    echo "❌ PostgreSQL がインストールされていません。"
+    echo ""
+    echo "インストールしてから再度 install を実行してください:"
+    if [[ "$OSTYPE" == "darwin"* ]]; then
+        echo "   brew install postgresql@16"
+        echo "   brew services start postgresql@16"
+    else
+        echo "   sudo apt install postgresql"
+        echo "   sudo systemctl start postgresql"
+    fi
+    exit 1
+fi
+
+# Postgres 起動確認 (= ここで止めないと CREATE USER 等が Connection refused で連発する)
+if ! pg_isready -q 2>/dev/null; then
+    echo "❌ PostgreSQL に接続できません (localhost:5432)。"
+    echo ""
+    echo "起動してから再度 install を実行してください:"
+    if [[ "$OSTYPE" == "darwin"* ]]; then
+        echo "   brew services start postgresql@16"
+    else
+        echo "   sudo systemctl start postgresql"
+    fi
     exit 1
 fi
 
