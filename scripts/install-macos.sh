@@ -19,6 +19,14 @@ echo "Downloading AI Server..."
 curl -fSL "$BASE_URL/lmlight-vite-macos-$ARCH" -o "$INSTALL_DIR/api"
 chmod +x "$INSTALL_DIR/api"
 
+# uv 仕込み (= YOLO / transcribe / plugin install を将来即実行できるようにする)
+# venv は作らない (= 各 optional install script が lazy に作る、容量影響なし)
+if ! command -v uv &>/dev/null; then
+    echo "Installing uv (= optional features の前提)..."
+    curl -LsSf https://astral.sh/uv/install.sh | sh >/dev/null 2>&1 \
+        || echo "⚠️  uv install 失敗。後で: curl -LsSf https://astral.sh/uv/install.sh | sh"
+fi
+
 [ ! -f "$INSTALL_DIR/.env" ] && cat > "$INSTALL_DIR/.env" << EOF
 # =============================================================================
 # AI Server Configuration (Vite Edition)
@@ -94,8 +102,34 @@ if [ -f "$INSTALL_DIR/.env" ]; then
         export DB_NAME=$(echo "$_DB_URL" | sed -n 's|.*/\([^?]*\).*|\1|p')
     fi
 fi
-echo "Setting up database..."
-curl -fsSL https://raw.githubusercontent.com/lmlight-app/dist_vite/main/scripts/db_setup.sh | bash
+# ── DB bootstrap (= superuser でしかできない 3 つだけ。schema / table / index /
+# column 追加 / 初期 admin user は backend 起動時の migrations.py が冪等に作成) ──
+echo "Setting up database (bootstrap only)..."
+DB_USER="${DB_USER:-digitalbase}"
+DB_PASS="${DB_PASS:-digitalbase}"
+DB_NAME="${DB_NAME:-digitalbase}"
+
+if ! command -v psql &>/dev/null; then
+    echo "❌ PostgreSQL がインストールされていません。"
+    echo "   brew install postgresql@16"
+    echo "   brew services start postgresql@16"
+    exit 1
+fi
+if ! pg_isready -q 2>/dev/null; then
+    echo "❌ PostgreSQL に接続できません (localhost:5432)。"
+    echo "   brew services start postgresql@16"
+    exit 1
+fi
+
+PSQL_ADMIN="psql -U postgres"
+$PSQL_ADMIN -c "CREATE USER $DB_USER WITH PASSWORD '$DB_PASS';" 2>/dev/null || true
+$PSQL_ADMIN -c "CREATE DATABASE $DB_NAME OWNER $DB_USER;" 2>/dev/null || true
+$PSQL_ADMIN -c "ALTER USER $DB_USER CREATEDB;" 2>/dev/null || true
+if ! $PSQL_ADMIN -d $DB_NAME -c "CREATE EXTENSION IF NOT EXISTS vector;" >/dev/null 2>&1; then
+    echo "⚠️  pgvector 拡張の有効化に失敗しました。RAG 機能を使う場合は:"
+    echo "   brew install pgvector"
+fi
+echo "✅ DB bootstrap 完了 (= schemas / tables は backend 起動時に自動作成)"
 
 cat > "$INSTALL_DIR/start.sh" << 'EOF'
 #!/bin/bash
