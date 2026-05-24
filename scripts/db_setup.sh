@@ -72,21 +72,9 @@ CREATE SCHEMA IF NOT EXISTS log;
 CREATE SCHEMA IF NOT EXISTS datalake;
 CREATE SCHEMA IF NOT EXISTS pgvector;
 
--- ── 既存環境からの schema 移動 (public.X → target.X) ─────────────────────────
--- legacy customer 上は ApprovalFlow 等が public schema に残ってる可能性がある。
--- 下の CREATE TABLE IF NOT EXISTS で空テーブルが先にできると ALTER SET SCHEMA
--- が target 衝突で失敗するため、CREATE より前に移動する。
-ALTER TABLE IF EXISTS public."ApprovalFlow" SET SCHEMA approval;
-ALTER TABLE IF EXISTS public."ApprovalFlowStep" SET SCHEMA approval;
-ALTER TABLE IF EXISTS public."ApprovalRequest" SET SCHEMA approval;
-ALTER TABLE IF EXISTS public."ApprovalStepResult" SET SCHEMA approval;
-ALTER TABLE IF EXISTS public."HelpdeskRoom" SET SCHEMA helpdesk;
-ALTER TABLE IF EXISTS public."HelpdeskMember" SET SCHEMA helpdesk;
-ALTER TABLE IF EXISTS public."HelpdeskReadState" SET SCHEMA helpdesk;
-ALTER TABLE IF EXISTS public."YoloModel" SET SCHEMA vision;
-ALTER TABLE IF EXISTS public."VisionAutomationRule" SET SCHEMA vision;
-ALTER TABLE IF EXISTS public."AppLog" SET SCHEMA log;
-ALTER TABLE IF EXISTS public."AuditLog" SET SCHEMA log;
+-- 旧 public schema からの table 移行は backend 起動時の migrations.py
+-- (_move_tables_to_schema) が担当する。db_setup.sh はクリーン install 用なので
+-- ここでは扱わない (= NOTICE: relation ... does not exist, skipping を抑止)。
 
 -- ── Enums ───────────────────────────────────────────────────────────────────
 DO $$ BEGIN CREATE TYPE "UserRole" AS ENUM ('ADMIN', 'SUPER', 'USER'); EXCEPTION WHEN duplicate_object THEN null; END $$;
@@ -575,7 +563,10 @@ CREATE INDEX IF NOT EXISTS "datasets_owner_idx" ON datalake.datasets("ownerId");
 
 CREATE INDEX IF NOT EXISTS idx_bot_user ON pgvector.embeddings (bot_id, user_id);
 CREATE INDEX IF NOT EXISTS idx_document ON pgvector.embeddings (document_id);
-CREATE INDEX IF NOT EXISTS idx_embeddings_hnsw ON pgvector.embeddings USING hnsw (embedding vector_cosine_ops);
+-- HNSW index は dimension 確定後でないと作れない (= "column does not have dimensions" ERROR)。
+-- 初回 embedding 保存時に backend (= migrations.py) が ALTER COLUMN vector(N) 固定し、
+-- そのタイミングで HNSW を自動作成する。
+-- CREATE INDEX IF NOT EXISTS idx_embeddings_hnsw ON pgvector.embeddings USING hnsw (embedding vector_cosine_ops);
 
 -- ── 初期 admin user (admin@local / admin123) ────────────────────────────────
 INSERT INTO "User" ("id", "email", "name", "hashedPassword", "role", "status", "updatedAt")
