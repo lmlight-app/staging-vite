@@ -267,13 +267,10 @@ if systemctl is-active --quiet avahi-daemon 2>/dev/null; then
     echo "🌐 mDNS: http://$(hostname).local:${API_PORT:-8000}"
 fi
 
-if [ "${VLLM_AUTO_START:-false}" = "true" ]; then
-    echo ""
-    echo "🔧 vLLM auto-start enabled (chat: ${VLLM_BASE_URL:-:8080}, embed: ${VLLM_EMBED_BASE_URL:-:8081})"
-else
-    echo ""
-    echo "⚠️  vLLM auto-start disabled. Start vLLM servers manually."
-fi
+# vLLM 起動状態は Python (api 側) が single source of truth で log 出力する
+# shell では予言せず、URL だけ案内
+echo ""
+echo "📡 vLLM endpoints: chat=${VLLM_BASE_URL:-http://localhost:8080}, embed=${VLLM_EMBED_BASE_URL:-http://localhost:8081}"
 
 echo ""
 echo "Press Ctrl+C to stop"
