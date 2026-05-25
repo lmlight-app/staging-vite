@@ -83,10 +83,9 @@ ALTER TABLE IF EXISTS public."ApprovalStepResult" SET SCHEMA approval;
 ALTER TABLE IF EXISTS public."HelpdeskRoom" SET SCHEMA helpdesk;
 ALTER TABLE IF EXISTS public."HelpdeskMember" SET SCHEMA helpdesk;
 ALTER TABLE IF EXISTS public."HelpdeskReadState" SET SCHEMA helpdesk;
-ALTER TABLE IF EXISTS public."YoloModel" SET SCHEMA vision;
-ALTER TABLE IF EXISTS public."VisionAutomationRule" SET SCHEMA vision;
 ALTER TABLE IF EXISTS public."AppLog" SET SCHEMA log;
 ALTER TABLE IF EXISTS public."AuditLog" SET SCHEMA log;
+-- YOLO + VisionAutomation は 2026-05 で _archived/ に移動。既存環境のテーブルは残す (dead)。
 
 -- ── Enums ───────────────────────────────────────────────────────────────────
 DO $$ BEGIN CREATE TYPE "UserRole" AS ENUM ('ADMIN', 'SUPER', 'USER'); EXCEPTION WHEN duplicate_object THEN null; END $$;
@@ -433,35 +432,7 @@ CREATE TABLE IF NOT EXISTS helpdesk."HelpdeskReadState" (
     "lastReadAt" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
--- ── vision schema ───────────────────────────────────────────────────────────
-CREATE TABLE IF NOT EXISTS vision."YoloModel" (
-    "id" VARCHAR(255) NOT NULL PRIMARY KEY,
-    "name" VARCHAR(255) NOT NULL,
-    "version" VARCHAR(64) NOT NULL,
-    "fileName" VARCHAR(255) NOT NULL,
-    "baseModel" VARCHAR(255),
-    "classes" JSONB,
-    "metricsJson" JSONB,
-    "notes" TEXT,
-    "isActive" BOOLEAN NOT NULL DEFAULT true,
-    "createdBy" VARCHAR(255) NOT NULL,
-    "createdAt" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE TABLE IF NOT EXISTS vision."VisionAutomationRule" (
-    "id" VARCHAR(255) NOT NULL PRIMARY KEY,
-    "name" VARCHAR(255) NOT NULL,
-    "enabled" BOOLEAN NOT NULL DEFAULT true,
-    "sourceConfig" JSONB NOT NULL,
-    "detectConfig" JSONB NOT NULL,
-    "triggerCondition" JSONB NOT NULL,
-    "pipelineId" VARCHAR(255),
-    "notifyConfig" JSONB,
-    "schedule" VARCHAR(64),
-    "createdBy" VARCHAR(255) NOT NULL,
-    "createdAt" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    "updatedAt" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
+-- vision schema は _archived/yolo-feature/ に移動済 (YoloModel / VisionAutomationRule)
 
 -- ── log schema ──────────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS log."AppLog" (

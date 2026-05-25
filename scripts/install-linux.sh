@@ -35,8 +35,10 @@ fi
 # PostgreSQL Database
 DATABASE_URL=postgresql://digitalbase:digitalbase@localhost:5432/digitalbase
 
-# Ollama LLM Server
+# Ollama 設定 (= daemon-native env、ollama serve が直接読む。app 側も config.py で読む)
 OLLAMA_BASE_URL=http://localhost:11434
+# Ollama daemon の num_ctx 上書き (default 2048 → 16384) - document 出力切れ防止
+OLLAMA_CONTEXT_LENGTH=16384
 
 # License
 LICENSE_FILE_PATH=$INSTALL_DIR/license.lic

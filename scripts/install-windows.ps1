@@ -391,12 +391,24 @@ if (Get-Command psql -ErrorAction SilentlyContinue) {
 Write-Info "ステップ 4/5: Ollama をセットアップ中..."
 
 if (Get-Command ollama -ErrorAction SilentlyContinue) {
-    # Ollama が起動していない場合は起動
+    # .env の OLLAMA_CONTEXT_LENGTH を Windows User scope env に setx
+    # (= Ollama Desktop 起動時に env 継承するため)
+    $ctxLen = "16384"  # default
+    if (Test-Path "$INSTALL_DIR\.env") {
+        $line = Get-Content "$INSTALL_DIR\.env" | Where-Object { $_ -match '^OLLAMA_CONTEXT_LENGTH=' } | Select-Object -First 1
+        if ($line) { $ctxLen = $line -replace '^OLLAMA_CONTEXT_LENGTH=', '' }
+    }
+    [Environment]::SetEnvironmentVariable("OLLAMA_CONTEXT_LENGTH", $ctxLen, "User")
+    $env:OLLAMA_CONTEXT_LENGTH = $ctxLen
+
+    # Ollama が起動していない場合は起動 (現在の env を継承)
     $ollamaProcess = Get-Process -Name "ollama" -ErrorAction SilentlyContinue
     if (-not $ollamaProcess) {
-        Write-Info "Ollama を起動中..."
+        Write-Info "Ollama を起動中 (OLLAMA_CONTEXT_LENGTH=$ctxLen)..."
         Start-Process -FilePath "ollama" -ArgumentList "serve" -WindowStyle Hidden
         Start-Sleep -Seconds 3
+    } else {
+        Write-Info "Ollama は既に起動中。OLLAMA_CONTEXT_LENGTH 反映には再起動が必要です。"
     }
 
 }
@@ -414,6 +426,8 @@ if (-not (Test-Path "$INSTALL_DIR\.env")) {
 DATABASE_URL=postgresql://${DB_USER}:${DB_PASSWORD}@localhost:${DB_PORT}/${DB_NAME}
 OLLAMA_BASE_URL=http://localhost:11434
 # OLLAMA_NUM_PARALLEL=8
+# Ollama daemon の num_ctx (default 2048 → 16384) - document 出力切れ防止
+OLLAMA_CONTEXT_LENGTH=16384
 LICENSE_FILE_PATH=$INSTALL_DIR\license.lic
 
 # File Storage (pipeline uploads/outputs)
