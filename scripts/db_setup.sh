@@ -229,6 +229,7 @@ CREATE TABLE IF NOT EXISTS "Prompt" (
     "id" VARCHAR(255) NOT NULL PRIMARY KEY,
     "title" VARCHAR(255) NOT NULL,
     "content" TEXT NOT NULL,
+    "fields" JSONB,
     "userId" VARCHAR(255) NOT NULL,
     "shareType" "ShareType" NOT NULL DEFAULT 'PRIVATE',
     "shareTagId" VARCHAR(255),
