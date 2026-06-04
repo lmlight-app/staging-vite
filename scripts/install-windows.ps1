@@ -423,11 +423,16 @@ if (-not (Test-Path "$INSTALL_DIR\.env")) {
     $JWT_SECRET = -join ((48..57) + (97..122) | Get-Random -Count 64 | ForEach-Object { [char]$_ })
     $ENV_CONTENT = @"
 # AI Server Configuration
+# Backend selection (= unified codebase で env で切替)
+LLM_BACKEND=ollama
+
 DATABASE_URL=postgresql://${DB_USER}:${DB_PASSWORD}@localhost:${DB_PORT}/${DB_NAME}
 OLLAMA_BASE_URL=http://localhost:11434
 # OLLAMA_NUM_PARALLEL=8
 # Ollama daemon の num_ctx (default 2048 → 16384) - document 出力切れ防止
 OLLAMA_CONTEXT_LENGTH=16384
+# 起動時に Ollama daemon を auto-spawn (= 1-click 起動向け、false にすると外部 daemon 想定)
+OLLAMA_AUTO_START=true
 LICENSE_FILE_PATH=$INSTALL_DIR\license.lic
 
 # File Storage (pipeline uploads/outputs)

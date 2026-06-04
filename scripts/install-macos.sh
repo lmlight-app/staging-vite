@@ -32,6 +32,9 @@ fi
 # AI Server Configuration (Vite Edition)
 # =============================================================================
 
+# Backend selection (= unified codebase で env で切替)
+LLM_BACKEND=ollama
+
 # PostgreSQL Database
 DATABASE_URL=postgresql://digitalbase:digitalbase@localhost:5432/digitalbase
 
@@ -39,6 +42,8 @@ DATABASE_URL=postgresql://digitalbase:digitalbase@localhost:5432/digitalbase
 OLLAMA_BASE_URL=http://localhost:11434
 # Ollama daemon の num_ctx 上書き (default 2048 → 16384) - document 出力切れ防止
 OLLAMA_CONTEXT_LENGTH=16384
+# 起動時に Ollama daemon を auto-spawn (= 1-click 起動向け、false にすると外部 daemon 想定)
+OLLAMA_AUTO_START=true
 
 # License
 LICENSE_FILE_PATH=$INSTALL_DIR/license.lic

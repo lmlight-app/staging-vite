@@ -13,10 +13,10 @@ mkdir -p "$INSTALL_DIR"
 
 [ -f "$INSTALL_DIR/stop.sh" ] && "$INSTALL_DIR/stop.sh" 2>/dev/null || true
 
-# Download vLLM backend binary (onefile, ~170MB)
-echo " Downloading vLLM backend..."
+# Download unified backend binary (= api/ 統一、LLM_BACKEND=vllm で vllm mode)
+echo " Downloading AI Server backend..."
 
-BINARY_URL="$BASE_URL/lmlight-vite-vllm-linux-$ARCH"
+BINARY_URL="$BASE_URL/lmlight-vite-linux-$ARCH"
 
 if command -v wget &>/dev/null; then
   wget --show-progress --timeout=600 --tries=3 "$BINARY_URL" -O "$INSTALL_DIR/api"
@@ -93,6 +93,9 @@ echo "✅ Python venv ready"
 # =============================================================================
 # AI Server Configuration (vLLM Edition)
 # =============================================================================
+
+# Backend selection (= unified codebase で env で切替)
+LLM_BACKEND=vllm
 
 # Python path for vLLM (auto-configured by installer)
 VLLM_PYTHON=$INSTALL_DIR/venv/bin/python
