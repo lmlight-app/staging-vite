@@ -22,10 +22,15 @@ if (-not $isAdmin) {
     Write-Host "新しい管理者ウィンドウでインストールが続行されます。" -ForegroundColor Yellow
     Write-Host ""
     try {
+        # インストール本体は子 powershell で実行する。
+        # スクリプト内の Write-Error は exit を呼ぶため、同一プロセスで
+        # irm|iex すると exit がプロセスごと落とし Read-Host に届かない
+        # (= admin ウィンドウが完了通知なく一瞬で消える)。子プロセスに
+        # 隔離すれば exit は子のみを終了させ、親は必ず Read-Host で待機する。
         Start-Process -FilePath "powershell.exe" -Verb RunAs -ArgumentList @(
             "-NoProfile",
             "-ExecutionPolicy", "Bypass",
-            "-Command", "irm $relaunchUrl | iex; Read-Host '完了しました。Enter キーで閉じる'"
+            "-Command", "powershell -NoProfile -ExecutionPolicy Bypass -Command `"irm $relaunchUrl | iex`"; Write-Host ''; Read-Host '処理が終了しました。Enter キーで閉じる'"
         ) -ErrorAction Stop
     } catch {
         Write-Host "[エラー] 管理者権限への昇格がキャンセルされました" -ForegroundColor Red

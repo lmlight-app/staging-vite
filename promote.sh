@@ -44,8 +44,11 @@ if [ -f "$IW" ]; then
   sed -i '' \
     's|"https://github.com/lmlight-app/dist_vite/releases/latest/download"|"https://pub-a2cab4360f1748cab5ae1c0f12cddc0a.r2.dev/vite-latest"|' \
     "$IW"
+  # クォート無しのベア URL でマッチ。$relaunchUrl (クォート付き) と
+  # ヘッダの「使い方」コメント (クォート無し) の両方を R2 CDN へ書き換える。
+  # ここを取りこぼすと本番インストーラが昇格時に staging を再取得してしまう。
   sed -i '' \
-    's|"https://raw.githubusercontent.com/lmlight-app/dist_vite/main/scripts/install-windows.ps1"|"https://pub-a2cab4360f1748cab5ae1c0f12cddc0a.r2.dev/vite-scripts/install-windows.ps1"|' \
+    's|https://raw.githubusercontent.com/lmlight-app/dist_vite/main/scripts/install-windows.ps1|https://pub-a2cab4360f1748cab5ae1c0f12cddc0a.r2.dev/vite-scripts/install-windows.ps1|g' \
     "$IW"
 fi
 
