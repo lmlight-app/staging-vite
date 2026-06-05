@@ -120,7 +120,10 @@ VLLM_EMBED_BASE_URL=http://localhost:8081
 VLLM_AUTO_START=true
 
 # Models (HuggingFace model IDs)
-VLLM_CHAT_MODEL=Qwen/Qwen3.5-35B-A3B
+# 軽量 default = Qwen3-4B (= 4B params, 32K context, 24GB GPU で余裕、PoC 用)
+# 上位:   Qwen/Qwen3-8B (= ~16GB), Qwen/Qwen3.5-35B-A3B (= 大型 MoE、>24GB)
+# 最軽量: Qwen/Qwen3-1.7B (= ~4GB、low-end GPU 可)
+VLLM_CHAT_MODEL=Qwen/Qwen3-4B
 VLLM_EMBED_MODEL=Qwen/Qwen3-Embedding-0.6B
 # Optional: Separate vision model (requires VLLM_VISION_BASE_URL)
 # VLLM_VISION_MODEL=Qwen/Qwen2.5-VL-7B-Instruct
