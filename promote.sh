@@ -29,7 +29,12 @@ cp "$STAGING_DIR/scripts/installer/"*.ps1 "$DIST_DIR/scripts/installer/" 2>/dev/
 # / api.github.com paths that include the org/repo path.
 cd "$DIST_DIR/scripts"
 for f in *.sh *.ps1; do
-  [ -f "$f" ] && sed -i '' 's|lmlight-app/staging-vite|lmlight-app/dist_vite|g' "$f"
+  [ -f "$f" ] || continue
+  # repo path: staging-vite → dist_vite
+  sed -i '' 's|lmlight-app/staging-vite|lmlight-app/dist_vite|g' "$f"
+  # binary $BASE_URL: staging は dist_vite の GitHub Releases を見るが、dist(本番) は R2 CDN。
+  # macOS / Linux / vLLM の install-*.sh と install-windows.ps1 すべてに適用。
+  sed -i '' 's|https://github.com/lmlight-app/dist_vite/releases/latest/download|https://pub-a2cab4360f1748cab5ae1c0f12cddc0a.r2.dev/vite-latest|g' "$f"
 done
 for f in installer/*.iss installer/*.ps1; do
   [ -f "$f" ] && sed -i '' 's|lmlight-app/staging-vite|lmlight-app/dist_vite|g' "$f"

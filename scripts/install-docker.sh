@@ -8,7 +8,7 @@ set -e
 INSTALL_DIR="${DB_INSTALL_DIR:-$HOME/.local/db}"
 EDITION="${EDITION:-ollama}"                  # ollama | vllm
 DOCKER_USER="${DOCKER_USER:-lmlight}"
-IMAGE="${DB_IMAGE:-$DOCKER_USER/digitalbase-$EDITION:latest}"
+IMAGE="${DB_IMAGE:-$DOCKER_USER/digitalbase:latest}"
 APP_CONTAINER="${APP_CONTAINER:-digitalbase-app}"
 PG_CONTAINER="${PG_CONTAINER:-digitalbase-postgres}"
 APP_PORT="${APP_PORT:-8000}"
