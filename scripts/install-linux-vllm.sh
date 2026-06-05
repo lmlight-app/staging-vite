@@ -3,7 +3,7 @@
 set -e
 
 BASE_URL="${DB_BASE_URL:-https://github.com/lmlight-app/dist_vite/releases/latest/download}"
-INSTALL_DIR="${DB_INSTALL_DIR:-$HOME/.local/db-vllm}"
+INSTALL_DIR="${DB_INSTALL_DIR:-$HOME/.local/db}"
 ARCH="$(uname -m)"
 case "$ARCH" in x86_64|amd64) ARCH="amd64" ;; aarch64|arm64) ARCH="arm64" ;; esac
 
@@ -254,7 +254,7 @@ if ! command -v nvidia-smi &>/dev/null; then
 fi
 
 # Stop existing
-pkill -f "db-vllm.*api" 2>/dev/null; sleep 1
+pkill -f "db.*api" 2>/dev/null; sleep 1
 
 echo "🚀 Starting AI Server (vLLM Edition)..."
 
@@ -289,7 +289,7 @@ chmod +x "$INSTALL_DIR/start.sh"
 cat > "$INSTALL_DIR/stop.sh" << 'EOF'
 #!/bin/bash
 # Kill start.sh first (which will trigger its trap to kill API/Web)
-pkill -f "db-vllm/start\.sh" 2>/dev/null
+pkill -f "db/start\.sh" 2>/dev/null
 sleep 1
 # Clean up any remaining processes
 pkill -f "\./api$" 2>/dev/null
@@ -297,23 +297,23 @@ echo "Stopped"
 EOF
 chmod +x "$INSTALL_DIR/stop.sh"
 
-# Create db-vllm CLI script
-cat > "$INSTALL_DIR/db-vllm" << 'EOF'
+# Create db CLI script
+cat > "$INSTALL_DIR/db" << 'EOF'
 #!/bin/bash
-DB_HOME="${DB_HOME:-$HOME/.local/db-vllm}"
+DB_HOME="${DB_HOME:-$HOME/.local/db}"
 case "$1" in
     start) "$DB_HOME/start.sh" ;;
     stop)  "$DB_HOME/stop.sh" ;;
-    *)     echo "Usage: db-vllm {start|stop}"; exit 1 ;;
+    *)     echo "Usage: db {start|stop}"; exit 1 ;;
 esac
 EOF
-chmod +x "$INSTALL_DIR/db-vllm"
+chmod +x "$INSTALL_DIR/db"
 
 # Create symlink to /usr/local/bin (requires sudo)
-sudo ln -sf "$INSTALL_DIR/db-vllm" /usr/local/bin/db-vllm 2>/dev/null || echo "⚠️  Run: sudo ln -sf $INSTALL_DIR/db-vllm /usr/local/bin/db-vllm"
+sudo ln -sf "$INSTALL_DIR/db" /usr/local/bin/db 2>/dev/null || echo "⚠️  Run: sudo ln -sf $INSTALL_DIR/db /usr/local/bin/db"
 
 echo ""
-echo "Done. Edit $INSTALL_DIR/.env then run: db-vllm start"
+echo "Done. Edit $INSTALL_DIR/.env then run: db start"
 echo ""
 echo "Note: vLLM requires NVIDIA GPU with CUDA."
 echo "      First run will download models from HuggingFace (~3GB)."
