@@ -7,38 +7,14 @@ $ErrorActionPreference = "Stop"
 [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
 
 # ============================================================
-# 管理者権限チェック + 自動昇格
+# 実行権限について (= 管理者強制はしない)
 # ============================================================
-# winget による PostgreSQL/Ollama インストール、`Start-Service postgresql-x64-NN`、
-# C:\Program Files\PostgreSQL\NN\lib への vector.dll 配置はすべて
-# 管理者権限が必要。非 admin で実行されたら UAC で再起動して新しい
-# admin ウィンドウで継続させる (irm | iex 形式は in-memory なので
-# スクリプト URL を改めて再 fetch する形)。
-$isAdmin = ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-if (-not $isAdmin) {
-    $relaunchUrl = if ($env:DB_INSTALLER_URL) { $env:DB_INSTALLER_URL } else { "https://raw.githubusercontent.com/lmlight-app/staging-vite/main/scripts/install-windows.ps1" }
-    Write-Host ""
-    Write-Host "管理者権限が必要です。UAC ダイアログで「はい」を選択してください..." -ForegroundColor Yellow
-    Write-Host "新しい管理者ウィンドウでインストールが続行されます。" -ForegroundColor Yellow
-    Write-Host ""
-    try {
-        # インストール本体は子 powershell で実行する。
-        # スクリプト内の Write-Error は exit を呼ぶため、同一プロセスで
-        # irm|iex すると exit がプロセスごと落とし Read-Host に届かない
-        # (= admin ウィンドウが完了通知なく一瞬で消える)。子プロセスに
-        # 隔離すれば exit は子のみを終了させ、親は必ず Read-Host で待機する。
-        Start-Process -FilePath "powershell.exe" -Verb RunAs -ArgumentList @(
-            "-NoProfile",
-            "-ExecutionPolicy", "Bypass",
-            "-Command", "powershell -NoProfile -ExecutionPolicy Bypass -Command `"irm $relaunchUrl | iex`"; Write-Host ''; Read-Host '処理が終了しました。Enter キーで閉じる'"
-        ) -ErrorAction Stop
-    } catch {
-        Write-Host "[エラー] 管理者権限への昇格がキャンセルされました" -ForegroundColor Red
-        Write-Host "PowerShell を「管理者として実行」で開き直して再度お試しください" -ForegroundColor Red
-        exit 1
-    }
-    exit 0
-}
+# アプリ本体は %LOCALAPPDATA%\db (ユーザー書込可) に入るため admin 不要で、
+# 通常ユーザーのまま最後まで実行する (= 旧挙動に復帰)。
+# admin が要る処理 (pgvector の vector.dll を Program Files\PostgreSQL に配置
+# 等) は権限が無ければ警告のみで続行し、RAG (ベクトル検索) を無効化する
+# (= graceful degrade)。RAG を使う場合のみ「管理者として実行」で再実行するか
+# pgvector を手動導入する。pgvector の扱いは別途整理予定。
 
 # 設定
 $BASE_URL = if ($env:DB_BASE_URL) { $env:DB_BASE_URL } else { "https://github.com/lmlight-app/dist_vite/releases/latest/download" }
@@ -131,7 +107,8 @@ if ((Get-Command tesseract -ErrorAction SilentlyContinue) -or (Test-Path "C:\Pro
     $MISSING_DEPS += "tesseract"
 }
 
-# winget で依存関係をインストール (常に admin で実行されているのでガード不要)
+# winget で依存関係をインストール (任意 / opt-in)。非 admin だと machine install は
+# 失敗しうるが、その場合も停止せず後続の検出で「未導入」として案内・続行する。
 if ($MISSING_DEPS.Count -gt 0) {
     Write-Info "不足している依存関係を自動インストールしますか？ (Y/n)"
     $response = Read-Host
@@ -297,86 +274,59 @@ if (Get-Command psql -ErrorAction SilentlyContinue) {
     }
     $null = psql -U postgres -p $DB_PORT -c "ALTER USER `"$DB_USER`" CREATEDB;" 2>&1
 
-    # pgvector拡張 - 自動インストール
-    # PostgreSQL インストールパスを検出
+    # pgvector DLL の配置 (= 自前ビルドの pgvector-pgNN-*.zip を dist_vite Releases から取得)。
+    # この自前ビルドは VC++ Redistributable に依存しないため vc_redist の導入は不要。
+    # Program Files\PostgreSQL への配置は admin が要るが、権限が無ければ Warn して
+    # RAG を無効化し続行する (= 昇格はしない。post-install.ps1 と同方式)。
+    # PostgreSQL ルートをバージョン非依存で自動検出 (= 13/19/将来版も拾う)。
+    # 1) C:\Program Files\PostgreSQL\<版> のうち psql.exe を持つ最新版
+    # 2) 見つからなければ PATH 上の psql から推定 (= 非標準パスの自前 install 対応)
     $PG_DIR = $null
-    $pgVersions = @("18", "17", "16", "15", "14")
-    foreach ($v in $pgVersions) {
-        $candidate = "C:\Program Files\PostgreSQL\$v"
-        if (Test-Path "$candidate\bin\psql.exe") {
-            $PG_DIR = $candidate
-            break
-        }
+    $pgBase = "C:\Program Files\PostgreSQL"
+    if (Test-Path $pgBase) {
+        $PG_DIR = Get-ChildItem $pgBase -Directory -ErrorAction SilentlyContinue |
+            Where-Object { Test-Path "$($_.FullName)\bin\psql.exe" } |
+            Sort-Object { [int]($_.Name -replace '\D', '') } -Descending |
+            Select-Object -First 1 -ExpandProperty FullName
     }
-
-    # vector.dll が未配置なら自動ダウンロード
+    if (-not $PG_DIR) {
+        $psqlCmd = Get-Command psql -ErrorAction SilentlyContinue
+        if ($psqlCmd) { $PG_DIR = Split-Path (Split-Path $psqlCmd.Source -Parent) -Parent }
+    }
     if ($PG_DIR -and -not (Test-Path "$PG_DIR\lib\vector.dll")) {
-        # pgvector DLL は VC++ 2015-2022 Redistributable (msvcp140.dll) に依存
-        if (-not (Test-Path "C:\Windows\System32\msvcp140.dll")) {
-            Write-Info "VC++ Redistributable が未インストールです。追加中..."
-            $vcRedist = "$env:TEMP\vc_redist.x64.exe"
-            try {
-                Invoke-WebRequest -Uri "https://aka.ms/vs/17/release/vc_redist.x64.exe" -OutFile $vcRedist -UseBasicParsing
-                Start-Process -FilePath $vcRedist -ArgumentList "/install","/quiet","/norestart" -Wait
-                Remove-Item -Force $vcRedist -ErrorAction SilentlyContinue
-                Write-Success "VC++ Redistributable をインストールしました"
-            } catch {
-                Write-Warn "VC++ Redistributable の自動インストールに失敗しました。手動で https://aka.ms/vs/17/release/vc_redist.x64.exe を導入してください"
-            }
-        }
-
-        Write-Info "pgvector をインストール中..."
         $pgMajor = (Split-Path $PG_DIR -Leaf)
-        $pgvectorZip = "$env:TEMP\pgvector.zip"
-        $pgvectorExtract = "$env:TEMP\pgvector_extract"
-
+        Write-Info "pgvector DLL を取得中..."
         try {
-            # GitHub API で PG メジャー版に合う最新リリースを解決
-            # (releases/latest は単一PG版のみを指すため、全PG版用の資産は入っていない)
-            $apiUrl = "https://api.github.com/repos/andreiramani/pgvector_pgsql_windows/releases"
-            $releases = Invoke-RestMethod -Uri $apiUrl -UseBasicParsing -Headers @{ "User-Agent" = "lmlight-installer" }
-            $match = $releases | Where-Object { $_.tag_name -match "_${pgMajor}(\.|$)" } | Select-Object -First 1
-            if (-not $match -or $match.assets.Count -eq 0) {
-                throw "PostgreSQL $pgMajor 用の pgvector リリースが見つかりません"
+            $releases = Invoke-RestMethod -Uri "https://api.github.com/repos/lmlight-app/dist_vite/releases" -UseBasicParsing -Headers @{ "User-Agent" = "lmlight-installer" }
+            $asset = $releases | ForEach-Object { $_.assets } | Where-Object { $_.name -like "pgvector-pg$pgMajor-*.zip" } | Select-Object -First 1
+            if (-not $asset) { throw "PostgreSQL $pgMajor 用の pgvector アセットが見つかりません" }
+            $zip = "$env:TEMP\pgvector.zip"; $extr = "$env:TEMP\pgvector_extract"
+            Invoke-WebRequest -Uri $asset.browser_download_url -OutFile $zip -UseBasicParsing
+            if (Test-Path $extr) { Remove-Item -Recurse -Force $extr }
+            Expand-Archive -Path $zip -DestinationPath $extr -Force
+            Get-ChildItem -Path $extr -Recurse -File | ForEach-Object {
+                $rel = $_.FullName.Substring($extr.Length).TrimStart('\')
+                $dst = Join-Path $PG_DIR $rel
+                New-Item -ItemType Directory -Force -Path (Split-Path $dst) | Out-Null
+                Copy-Item -Force $_.FullName $dst -ErrorAction Stop
             }
-            $pgvectorUrl = $match.assets[0].browser_download_url
-
-            Invoke-WebRequest -Uri $pgvectorUrl -OutFile $pgvectorZip -UseBasicParsing
-            if (Test-Path $pgvectorExtract) { Remove-Item -Recurse -Force $pgvectorExtract }
-            Expand-Archive -Path $pgvectorZip -DestinationPath $pgvectorExtract -Force
-
-            # DLL とコントロールファイルを配置 — Program Files 配下なので
-            # admin 権限がないと Access Denied。-ErrorAction Stop で
-            # 失敗を catch に飛ばす。
-            Get-ChildItem -Path $pgvectorExtract -Recurse -Filter "vector.dll" | ForEach-Object {
-                Copy-Item $_.FullName "$PG_DIR\lib\vector.dll" -Force -ErrorAction Stop
-            }
-            Get-ChildItem -Path $pgvectorExtract -Recurse -Filter "vector.control" | ForEach-Object {
-                Copy-Item $_.FullName "$PG_DIR\share\extension\vector.control" -Force -ErrorAction Stop
-            }
-            Get-ChildItem -Path $pgvectorExtract -Recurse -Filter "vector--*.sql" | ForEach-Object {
-                Copy-Item $_.FullName "$PG_DIR\share\extension\$($_.Name)" -Force -ErrorAction Stop
-            }
-
-            # クリーンアップ
-            Remove-Item -Force $pgvectorZip -ErrorAction SilentlyContinue
-            Remove-Item -Recurse -Force $pgvectorExtract -ErrorAction SilentlyContinue
-
-            Write-Success "pgvector をインストールしました (タグ: $($match.tag_name))"
+            Remove-Item $zip, $extr -Recurse -Force -ErrorAction SilentlyContinue
+            Write-Success "pgvector をインストールしました"
         } catch [System.UnauthorizedAccessException] {
-            Write-Error "pgvector DLL の配置に失敗 (Access Denied): $($_.Exception.Message)`n$PG_DIR\lib への書き込み権限がありません。管理者として PowerShell を開き直して再実行してください"
+            Write-Warn "pgvector DLL の配置に権限がありません ($PG_DIR\lib)。RAG (ベクトル検索) は無効化されます。"
+            Write-Warn "RAG を使う場合は管理者で再実行するか、Docker 版 (pgvector 同梱) を利用してください。"
         } catch {
-            Write-Warn "pgvector の自動インストールに失敗しました: $($_.Exception.Message)"
-            Write-Warn "RAG (ベクトル検索) は無効化されます。手動インストール: https://github.com/andreiramani/pgvector_pgsql_windows/releases"
+            Write-Warn "pgvector の取得に失敗しました: $($_.Exception.Message)。RAG は無効化されます。"
         }
     } elseif ($PG_DIR) {
-        Write-Success "pgvector は既にインストール済みです"
+        Write-Success "pgvector は既に配置済みです"
     }
 
     $extensionOut = psql -U postgres -p $DB_PORT -d $DB_NAME -c "CREATE EXTENSION IF NOT EXISTS vector;" 2>&1
     if ($LASTEXITCODE -ne 0) {
-        Write-Warn "pgvector 拡張の有効化に失敗: $extensionOut"
-        Write-Warn "RAG (ベクトル検索) は無効化されます"
+        Write-Warn "pgvector 拡張が無効のため RAG (ベクトル検索) は無効化されます (= DLL 未配置 / 権限不足)"
+    } else {
+        Write-Success "pgvector 拡張 有効"
     }
 
     $ErrorActionPreference = "Stop"
