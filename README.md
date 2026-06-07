@@ -46,6 +46,12 @@ irm https://raw.githubusercontent.com/lmlight-app/staging-vite/main/scripts/inst
 curl -fsSL https://raw.githubusercontent.com/lmlight-app/staging-vite/main/scripts/install-linux-vllm.sh | bash
 ```
 
+### Docker (vLLM 既定 / Ollama は `| EDITION=ollama bash`)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/lmlight-app/staging-vite/main/scripts/install-docker.sh | bash
+```
+
 ## 本番 curl コマンド (dist_vite → R2)
 
 ```bash
@@ -60,11 +66,21 @@ irm https://pub-a2cab4360f1748cab5ae1c0f12cddc0a.r2.dev/vite-scripts/install-win
 
 # vLLM (Linux)
 curl -fsSL https://pub-a2cab4360f1748cab5ae1c0f12cddc0a.r2.dev/vite-scripts/install-linux-vllm.sh | bash
+
+# Docker (vLLM 既定 / Ollama は | EDITION=ollama bash)
+curl -fsSL https://pub-a2cab4360f1748cab5ae1c0f12cddc0a.r2.dev/vite-scripts/install-docker.sh | bash
 ```
 
-## 本番昇格
+## 本番昇格 (2段階)
 
 ```bash
-cd /Users/yimai/localenv/dist_vite
-./promote.sh
+# ① staging の script 編集を dist_vite/scripts へ反映
+#    (コピー + URL書換: staging-vite→dist_vite raw, git→R2)
+cd /Users/yimai/localenv/staging-vite && ./promote.sh
+
+# ② dist_vite を確認・commit したら、binary + scripts + README を R2 へ配信
+cd /Users/yimai/localenv/dist_vite && ./promote.sh
 ```
+
+> script を直した時は ① が必須（抜くと古い dist scripts が R2 に上がる）。
+> binary だけの更新（新タグ）なら ② だけでよい。

@@ -1,12 +1,12 @@
 #!/bin/bash
 # AI Server Docker Installer
 # 使い方:
-#   curl -fsSL https://raw.githubusercontent.com/lmlight-app/staging-vite/main/scripts/install-docker.sh | bash
-#   EDITION=vllm bash install-docker.sh           # vLLM 版 (= Linux + CUDA)
+#   curl -fsSL https://raw.githubusercontent.com/lmlight-app/staging-vite/main/scripts/install-docker.sh | bash                # vLLM 版 (= 既定。外部 vLLM サーバ前提)
+#   curl -fsSL https://raw.githubusercontent.com/lmlight-app/staging-vite/main/scripts/install-docker.sh | EDITION=ollama bash # Ollama 版
 set -e
 
-INSTALL_DIR="${DB_INSTALL_DIR:-$HOME/.local/db}"
-EDITION="${EDITION:-ollama}"                  # ollama | vllm
+INSTALL_DIR="${DB_INSTALL_DIR:-$HOME/digitalbase}"
+EDITION="${EDITION:-vllm}"                    # vllm (既定) | ollama
 DOCKER_USER="${DOCKER_USER:-lmlight}"
 IMAGE="${DB_IMAGE:-$DOCKER_USER/digitalbase:latest}"
 APP_CONTAINER="${APP_CONTAINER:-digitalbase-app}"
@@ -56,6 +56,7 @@ mkdir -p "$INSTALL_DIR" "$INSTALL_DIR/files" "$INSTALL_DIR/postgres-data"
 
 if [ ! -f "$INSTALL_DIR/.env" ]; then
     JWT_SECRET=$(openssl rand -hex 32 2>/dev/null || date +%s%N | sha256sum | cut -c1-64)
+    OAUTH_ENCRYPTION_KEY=$(openssl rand -hex 32 2>/dev/null || date +%s%N | sha256sum | cut -c1-64)
     cat > "$INSTALL_DIR/.env" << EOF
 # AI Server Configuration ($EDITION edition / Docker)
 
@@ -80,6 +81,7 @@ FILES_DIR=/app/data/files
 API_HOST=0.0.0.0
 API_PORT=8000
 JWT_SECRET=$JWT_SECRET
+OAUTH_ENCRYPTION_KEY=$OAUTH_ENCRYPTION_KEY
 AUTH_MODE=local
 
 # Cloud LLM (= API key 設定で有効化)
@@ -131,70 +133,32 @@ if [ ! -f "$INSTALL_DIR/license.lic" ]; then
     echo ""
 fi
 
-# ── 7. db-docker CLI wrapper 生成 ──────────────────────────────────────
-cat > "$INSTALL_DIR/db-docker" << EOF
-#!/bin/bash
-# AI Server Docker control
-APP="$APP_CONTAINER"
-PG="$PG_CONTAINER"
-IMAGE="$IMAGE"
-INSTALL_DIR="$INSTALL_DIR"
-NETWORK="$NETWORK"
-APP_PORT="$APP_PORT"
-
-start_app() {
-    if docker ps --format '{{.Names}}' | grep -q "^\$APP\$"; then
-        echo "✅ Already running"
-    elif docker ps -a --format '{{.Names}}' | grep -q "^\$APP\$"; then
-        docker start "\$APP"
-        echo "✅ Started"
-    else
-        # Linux で host.docker.internal を有効化 (= Mac/Win は default で有効)
-        EXTRA_HOST="--add-host=host.docker.internal:host-gateway"
-        docker run -d --name "\$APP" --restart unless-stopped \\
-            --network "\$NETWORK" \\
-            \$EXTRA_HOST \\
-            -p \$APP_PORT:8000 \\
-            --env-file "\$INSTALL_DIR/.env" \\
-            -v "\$INSTALL_DIR:/app/data" \\
-            "\$IMAGE"
-        echo "✅ Started"
-    fi
-    echo "🌐 URL: http://localhost:\$APP_PORT"
-}
-
-case "\$1" in
-    start)   start_app ;;
-    stop)    docker stop "\$APP" 2>/dev/null && echo "✅ Stopped" ;;
-    restart) docker restart "\$APP" 2>/dev/null && echo "✅ Restarted" ;;
-    logs)    docker logs -f "\$APP" ;;
-    status)  docker ps -a --filter "name=\$APP" --filter "name=\$PG" --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}' ;;
-    pull)    docker pull "\$IMAGE" && echo "✅ Pulled (= db-docker restart で反映)" ;;
-    upload-license)
-        [ -z "\$2" ] && { echo "Usage: db-docker upload-license <license.lic>"; exit 1; }
-        cp "\$2" "\$INSTALL_DIR/license.lic" && echo "✅ License placed at \$INSTALL_DIR/license.lic"
-        echo "   db-docker restart で反映"
-        ;;
-    *) echo "Usage: db-docker {start|stop|restart|logs|status|pull|upload-license <file>}"; exit 1 ;;
-esac
-EOF
-chmod +x "$INSTALL_DIR/db-docker"
-
-# Try symlink to /usr/local/bin
-sudo ln -sf "$INSTALL_DIR/db-docker" /usr/local/bin/db-docker 2>/dev/null || \
-    echo "ℹ️  symlink 作成失敗 (= 直接 $INSTALL_DIR/db-docker で実行可能)"
-
-# ── 8. 起動 ────────────────────────────────────────────────────────────
+# ── 7. アプリ container 起動 (= db-docker は廃止。操作は素の docker) ────
 echo ""
 echo "🚀 アプリ container 起動..."
-"$INSTALL_DIR/db-docker" start
+# 既存 app container があれば作り直す (= data は volume に残るので安全)
+docker rm -f "$APP_CONTAINER" >/dev/null 2>&1 || true
+# --add-host: Linux で host.docker.internal を有効化 (= Mac/Win は default で有効)
+docker run -d --name "$APP_CONTAINER" --restart unless-stopped \
+    --network "$NETWORK" \
+    --add-host=host.docker.internal:host-gateway \
+    -p "$APP_PORT:8000" \
+    --env-file "$INSTALL_DIR/.env" \
+    -v "$INSTALL_DIR:/app/data" \
+    "$IMAGE"
 
 echo ""
 echo "============================================"
 echo "  ✅ Installation complete"
 echo "============================================"
-echo "  URL          : http://localhost:$APP_PORT"
-echo "  control cmd  : db-docker {start|stop|restart|logs|status|pull|upload-license}"
-echo "  env file     : $INSTALL_DIR/.env"
-echo "  data         : $INSTALL_DIR/files, $INSTALL_DIR/postgres-data"
+echo "  URL     : http://localhost:$APP_PORT"
+echo "  env     : $INSTALL_DIR/.env"
+echo "  data    : $INSTALL_DIR/files, $INSTALL_DIR/postgres-data"
+echo ""
+echo "  操作 (素の docker):"
+echo "    docker logs -f $APP_CONTAINER     # ログ"
+echo "    docker stop $APP_CONTAINER        # 停止"
+echo "    docker start $APP_CONTAINER       # 起動"
+echo "    更新   : docker pull $IMAGE → install を再実行 (data 保持)"
+echo "    license: cp <license.lic> $INSTALL_DIR/license.lic && docker restart $APP_CONTAINER"
 echo "============================================"
