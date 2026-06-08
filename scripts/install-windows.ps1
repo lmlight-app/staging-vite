@@ -83,6 +83,17 @@ Write-Info "ステップ 2/5: 依存関係をチェック中..."
 
 $MISSING_DEPS = @()
 
+# psql が PATH に無くても C:\Program Files\PostgreSQL\<版>\bin を見つけて PATH に足す。
+# (= EDB インストーラは psql を PATH に追加しないことが多く、これが無いと PG 導入済でも
+#  「未検知」→ DB セットアップ skip で壊れる。pgvector 側と同じ glob で堅牢化)
+if (-not (Get-Command psql -ErrorAction SilentlyContinue)) {
+    $pgRoot = Get-ChildItem "C:\Program Files\PostgreSQL" -Directory -ErrorAction SilentlyContinue |
+        Where-Object { Test-Path "$($_.FullName)\bin\psql.exe" } |
+        Sort-Object { [int]($_.Name -replace '\D', '') } -Descending |
+        Select-Object -First 1 -ExpandProperty FullName
+    if ($pgRoot) { $env:PATH = "$pgRoot\bin;$env:PATH" }
+}
+
 # PostgreSQL チェック
 if (Get-Command psql -ErrorAction SilentlyContinue) {
     Write-Success "PostgreSQL が見つかりました"
