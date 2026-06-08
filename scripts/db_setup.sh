@@ -356,6 +356,71 @@ CREATE TABLE IF NOT EXISTS "SqlDashboard" (
     "updatedAt" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
+-- ── /v1 OpenAI compat layer (Assistant / ApiKey) + BI credential ────────────
+CREATE TABLE IF NOT EXISTS "Assistant" (
+    "id" VARCHAR(255) NOT NULL PRIMARY KEY,
+    "object" VARCHAR(64) NOT NULL DEFAULT 'assistant',
+    "name" VARCHAR(255) NOT NULL,
+    "description" TEXT,
+    "model" VARCHAR(255) NOT NULL,
+    "instructions" TEXT,
+    "tools" JSONB,
+    "tool_resources" JSONB,
+    "temperature" DOUBLE PRECISION,
+    "top_p" DOUBLE PRECISION,
+    "response_format" JSONB,
+    "metadata" JSONB,
+    "ownerId" VARCHAR(255),
+    "isPublic" BOOLEAN NOT NULL DEFAULT false,
+    "createdAt" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS "ApiKey" (
+    "id" VARCHAR(255) NOT NULL PRIMARY KEY,
+    "keyHash" VARCHAR(255) NOT NULL UNIQUE,
+    "keyPrefix" VARCHAR(32) NOT NULL,
+    "keyEncrypted" TEXT,
+    "name" VARCHAR(255) NOT NULL,
+    "description" TEXT,
+    "ownerId" VARCHAR(255),
+    "boundAssistantId" VARCHAR(255),
+    "allowedAssistants" JSONB,
+    "allowedVectorStores" JSONB,
+    "allowedDatasets" JSONB,
+    "allowedDashboards" JSONB,
+    "monthlyTokenLimit" INTEGER,
+    "monthlyRequestLimit" INTEGER,
+    "rpmLimit" INTEGER,
+    "expiresAt" TIMESTAMP,
+    "allowedIps" JSONB,
+    "isActive" BOOLEAN NOT NULL DEFAULT true,
+    "createdAt" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "lastUsedAt" TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS "ApiKeyUsage" (
+    "id" VARCHAR(255) NOT NULL PRIMARY KEY,
+    "apiKeyId" VARCHAR(255) NOT NULL,
+    "channel" VARCHAR(64) NOT NULL,
+    "assistantId" VARCHAR(255),
+    "inputTokens" INTEGER,
+    "outputTokens" INTEGER,
+    "latencyMs" INTEGER,
+    "status" VARCHAR(32) NOT NULL DEFAULT 'ok',
+    "createdAt" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+-- BI ツール用の per-user DB role 資格情報 (= roleName/password を暗号化保管。CREATE ROLE は app user の CREATEROLE 権限で実行)
+CREATE TABLE IF NOT EXISTS "BiCredential" (
+    "ownerId" VARCHAR(255) NOT NULL PRIMARY KEY,
+    "roleName" VARCHAR(63) NOT NULL UNIQUE,
+    "passwordEncrypted" TEXT NOT NULL,
+    "allowedDatasets" JSONB,
+    "createdAt" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "rotatedAt" TIMESTAMP
+);
+
 -- ── approval schema ─────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS approval."ApprovalFlow" (
     "id" VARCHAR(255) NOT NULL PRIMARY KEY,
@@ -519,6 +584,12 @@ CREATE INDEX IF NOT EXISTS "PipelineStep_pipelineId_idx" ON "PipelineStep"("pipe
 CREATE INDEX IF NOT EXISTS "PipelineRun_pipelineId_idx" ON "PipelineRun"("pipelineId");
 CREATE INDEX IF NOT EXISTS "PipelineRun_status_idx" ON "PipelineRun"("status");
 CREATE INDEX IF NOT EXISTS "PipelineSchedule_pipelineId_idx" ON "PipelineSchedule"("pipelineId");
+CREATE INDEX IF NOT EXISTS "Assistant_ownerId_idx" ON "Assistant"("ownerId");
+CREATE INDEX IF NOT EXISTS "Assistant_isPublic_idx" ON "Assistant"("isPublic");
+CREATE INDEX IF NOT EXISTS "ApiKey_keyHash_idx" ON "ApiKey"("keyHash");
+CREATE INDEX IF NOT EXISTS "ApiKey_ownerId_idx" ON "ApiKey"("ownerId");
+CREATE INDEX IF NOT EXISTS "ApiKeyUsage_apiKeyId_idx" ON "ApiKeyUsage"("apiKeyId");
+CREATE INDEX IF NOT EXISTS "ApiKeyUsage_createdAt_idx" ON "ApiKeyUsage"("createdAt");
 
 CREATE INDEX IF NOT EXISTS "ApprovalFlow_createdBy_idx" ON approval."ApprovalFlow"("createdBy");
 CREATE INDEX IF NOT EXISTS "ApprovalFlowStep_flowId_idx" ON approval."ApprovalFlowStep"("flowId");
