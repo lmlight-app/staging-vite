@@ -262,15 +262,18 @@ if (Get-Command psql -ErrorAction SilentlyContinue) {
     $env:PGPASSWORD = $pgSuperPassword
     Write-Success "PostgreSQL 管理者認証 OK"
 
-    # データベースとユーザー作成 — エラー出力をキャプチャして失敗を可視化
-    # (ロール/DB が既存の場合のエラーメッセージはログ目的で出力)
-    $createUserOut = psql -U postgres -p $DB_PORT -c "CREATE USER `"$DB_USER`" WITH PASSWORD '$DB_PASSWORD';" 2>&1
-    if ($LASTEXITCODE -ne 0 -and $createUserOut -notmatch "already exists") {
-        Write-Error "ユーザー作成失敗: $createUserOut"
+    # データベースとユーザー作成 — 冪等に (= 再 install / アップデート時の "既存" で止めない)。
+    # PG のエラーメッセージは locale 依存 (英語 "already exists" / 日本語 "すでに存在します")
+    # なので、メッセージ照合ではなく pg_roles / pg_database で存在確認してから作成する。
+    $roleExists = psql -U postgres -p $DB_PORT -tAc "SELECT 1 FROM pg_roles WHERE rolname='$DB_USER'" 2>$null
+    if (("$roleExists").Trim() -ne "1") {
+        $createUserOut = psql -U postgres -p $DB_PORT -c "CREATE USER `"$DB_USER`" WITH PASSWORD '$DB_PASSWORD';" 2>&1
+        if ($LASTEXITCODE -ne 0) { Write-Error "ユーザー作成失敗: $createUserOut" }
     }
-    $createDbOut = psql -U postgres -p $DB_PORT -c "CREATE DATABASE `"$DB_NAME`" OWNER `"$DB_USER`";" 2>&1
-    if ($LASTEXITCODE -ne 0 -and $createDbOut -notmatch "already exists") {
-        Write-Error "DB 作成失敗: $createDbOut"
+    $dbExists = psql -U postgres -p $DB_PORT -tAc "SELECT 1 FROM pg_database WHERE datname='$DB_NAME'" 2>$null
+    if (("$dbExists").Trim() -ne "1") {
+        $createDbOut = psql -U postgres -p $DB_PORT -c "CREATE DATABASE `"$DB_NAME`" OWNER `"$DB_USER`";" 2>&1
+        if ($LASTEXITCODE -ne 0) { Write-Error "DB 作成失敗: $createDbOut" }
     }
     $null = psql -U postgres -p $DB_PORT -c "ALTER USER `"$DB_USER`" CREATEDB;" 2>&1
 
@@ -328,6 +331,25 @@ if (Get-Command psql -ErrorAction SilentlyContinue) {
     } else {
         Write-Success "pgvector 拡張 有効"
     }
+
+    # 既存テーブル/シーケンスの所有者を app user ($DB_USER) に揃える (= postgres 権限がある今のうちに)。
+    # 旧 install で postgres 所有のまま残った DB を救済し、起動時の migrations.py ($DB_USER 接続) が
+    # ALTER / CREATE INDEX できるようにする。新規 DB は対象ゼロで無害、冪等。
+    $reassignSql = @"
+DO `$`$
+DECLARE r record;
+BEGIN
+  FOR r IN SELECT schemaname, tablename FROM pg_tables
+           WHERE schemaname NOT IN ('pg_catalog','information_schema') LOOP
+    EXECUTE format('ALTER TABLE %I.%I OWNER TO %I', r.schemaname, r.tablename, '$DB_USER');
+  END LOOP;
+  FOR r IN SELECT sequence_schema, sequence_name FROM information_schema.sequences
+           WHERE sequence_schema NOT IN ('pg_catalog','information_schema') LOOP
+    EXECUTE format('ALTER SEQUENCE %I.%I OWNER TO %I', r.sequence_schema, r.sequence_name, '$DB_USER');
+  END LOOP;
+END `$`$;
+"@
+    $null = $reassignSql | psql -U postgres -p $DB_PORT -d $DB_NAME 2>$null
 
     $ErrorActionPreference = "Stop"
 
