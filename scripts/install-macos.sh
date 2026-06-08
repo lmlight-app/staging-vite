@@ -27,6 +27,12 @@ if ! command -v uv &>/dev/null; then
         || echo "⚠️  uv install 失敗。後で: curl -LsSf https://astral.sh/uv/install.sh | sh"
 fi
 
+# DB 接続情報は env で上書き可 (DB_USER/DB_PASS/DB_NAME)、既定 digitalbase。
+# 既存 .env がある場合は下の Database setup でその DATABASE_URL を正とする。
+DB_USER="${DB_USER:-digitalbase}"
+DB_PASS="${DB_PASS:-digitalbase}"
+DB_NAME="${DB_NAME:-digitalbase}"
+
 [ ! -f "$INSTALL_DIR/.env" ] && cat > "$INSTALL_DIR/.env" << EOF
 # =============================================================================
 # AI Server Configuration (Vite Edition)
@@ -36,7 +42,7 @@ fi
 LLM_BACKEND=ollama
 
 # PostgreSQL Database
-DATABASE_URL=postgresql://digitalbase:digitalbase@localhost:5432/digitalbase
+DATABASE_URL=postgresql://${DB_USER}:${DB_PASS}@localhost:5432/${DB_NAME}
 
 # Ollama 設定 (= daemon-native env、ollama serve が直接読む)
 OLLAMA_BASE_URL=http://localhost:11434

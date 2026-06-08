@@ -12,6 +12,10 @@ IMAGE="${DB_IMAGE:-$DOCKER_USER/digitalbase:latest}"
 APP_CONTAINER="${APP_CONTAINER:-digitalbase-app}"
 PG_CONTAINER="${PG_CONTAINER:-digitalbase-postgres}"
 APP_PORT="${APP_PORT:-8000}"
+# DB 接続情報は env で上書き可 (DB_USER/DB_PASS/DB_NAME)、既定 digitalbase。PG container 作成と DATABASE_URL で共通。
+DB_USER="${DB_USER:-digitalbase}"
+DB_PASS="${DB_PASS:-digitalbase}"
+DB_NAME="${DB_NAME:-digitalbase}"
 
 echo "============================================"
 echo "  AI Server Docker Installer"
@@ -64,7 +68,7 @@ if [ ! -f "$INSTALL_DIR/.env" ]; then
 LLM_BACKEND=$EDITION
 
 # PostgreSQL (= 同一 docker network 内の digitalbase-postgres container)
-DATABASE_URL=postgresql://digitalbase:digitalbase@$PG_CONTAINER:5432/digitalbase
+DATABASE_URL=postgresql://${DB_USER}:${DB_PASS}@$PG_CONTAINER:5432/${DB_NAME}
 
 # Ollama / vLLM endpoint (= container 内から host へは host.docker.internal)
 OLLAMA_BASE_URL=http://host.docker.internal:11434
@@ -103,20 +107,20 @@ if ! docker ps -a --format '{{.Names}}' | grep -q "^${PG_CONTAINER}$"; then
     echo "📦 PostgreSQL (pgvector) container 起動..."
     docker run -d --name "$PG_CONTAINER" --restart unless-stopped \
         --network "$NETWORK" \
-        -e POSTGRES_USER=digitalbase \
-        -e POSTGRES_PASSWORD=digitalbase \
-        -e POSTGRES_DB=digitalbase \
+        -e POSTGRES_USER="$DB_USER" \
+        -e POSTGRES_PASSWORD="$DB_PASS" \
+        -e POSTGRES_DB="$DB_NAME" \
         -v "$INSTALL_DIR/postgres-data:/var/lib/postgresql/data" \
         pgvector/pgvector:pg16 >/dev/null
     # PG 起動待ち
     echo "   PostgreSQL 起動待機中..."
     for i in $(seq 1 30); do
-        if docker exec "$PG_CONTAINER" pg_isready -U digitalbase >/dev/null 2>&1; then
+        if docker exec "$PG_CONTAINER" pg_isready -U "$DB_USER" >/dev/null 2>&1; then
             break
         fi
         sleep 1
     done
-    docker exec "$PG_CONTAINER" psql -U digitalbase -c "CREATE EXTENSION IF NOT EXISTS vector;" >/dev/null 2>&1 || true
+    docker exec "$PG_CONTAINER" psql -U "$DB_USER" -c "CREATE EXTENSION IF NOT EXISTS vector;" >/dev/null 2>&1 || true
     echo "✅ PostgreSQL 準備完了"
 else
     docker start "$PG_CONTAINER" >/dev/null 2>&1 || true

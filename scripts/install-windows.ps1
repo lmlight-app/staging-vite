@@ -21,10 +21,10 @@ $BASE_URL = if ($env:DB_BASE_URL) { $env:DB_BASE_URL } else { "https://github.co
 $INSTALL_DIR = if ($env:DB_INSTALL_DIR) { $env:DB_INSTALL_DIR } else { "$env:LOCALAPPDATA\db" }
 $ARCH = "amd64"  # Windows は x64 のみサポート
 
-# データベース設定 (デフォルト値、.env があればそちらを優先)
-$DB_USER = "digitalbase"
-$DB_PASSWORD = "digitalbase"
-$DB_NAME = "digitalbase"
+# データベース設定: env (DB_USER/DB_PASSWORD/DB_NAME) で上書き可、既定 digitalbase。.env があればそちらを優先
+$DB_USER = if ($env:DB_USER) { $env:DB_USER } else { "digitalbase" }
+$DB_PASSWORD = if ($env:DB_PASSWORD) { $env:DB_PASSWORD } else { "digitalbase" }
+$DB_NAME = if ($env:DB_NAME) { $env:DB_NAME } else { "digitalbase" }
 
 # 既存 .env から DATABASE_URL を読み取り (アップデート時にカスタム設定を反映)
 if (Test-Path "$INSTALL_DIR\.env") {

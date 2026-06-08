@@ -89,6 +89,12 @@ echo "✅ Python venv ready"
 
 # Vite Edition: frontend is embedded in the API binary, no app.tar.gz needed
 
+# DB 接続情報は env で上書き可 (DB_USER/DB_PASS/DB_NAME)、既定 digitalbase。
+# 既存 .env がある場合は下の Database setup でその DATABASE_URL を正とする。
+DB_USER="${DB_USER:-digitalbase}"
+DB_PASS="${DB_PASS:-digitalbase}"
+DB_NAME="${DB_NAME:-digitalbase}"
+
 [ ! -f "$INSTALL_DIR/.env" ] && cat > "$INSTALL_DIR/.env" << EOF
 # =============================================================================
 # AI Server Configuration (vLLM Edition)
@@ -101,7 +107,7 @@ LLM_BACKEND=vllm
 VLLM_PYTHON=$INSTALL_DIR/venv/bin/python
 
 # PostgreSQL Database
-DATABASE_URL=postgresql://digitalbase:digitalbase@localhost:5432/digitalbase
+DATABASE_URL=postgresql://${DB_USER}:${DB_PASS}@localhost:5432/${DB_NAME}
 
 # =============================================================================
 # vLLM Server URLs
