@@ -131,7 +131,7 @@ fi
 PSQL_ADMIN="psql -U postgres"
 $PSQL_ADMIN -c "CREATE USER $DB_USER WITH PASSWORD '$DB_PASS';" 2>/dev/null || true
 $PSQL_ADMIN -c "CREATE DATABASE $DB_NAME OWNER $DB_USER;" 2>/dev/null || true
-$PSQL_ADMIN -c "ALTER USER $DB_USER CREATEDB;" 2>/dev/null || true
+$PSQL_ADMIN -c "ALTER USER $DB_USER CREATEDB CREATEROLE;" 2>/dev/null || true
 if ! $PSQL_ADMIN -d $DB_NAME -c "CREATE EXTENSION IF NOT EXISTS vector;" >/dev/null 2>&1; then
     echo "⚠️  pgvector 拡張の有効化に失敗しました。RAG 機能を使う場合は:"
     echo "   brew install pgvector"

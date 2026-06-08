@@ -286,7 +286,7 @@ if (Get-Command psql -ErrorAction SilentlyContinue) {
         $createDbOut = psql -U postgres -p $DB_PORT -c "CREATE DATABASE `"$DB_NAME`" OWNER `"$DB_USER`";" 2>&1
         if ($LASTEXITCODE -ne 0) { Write-Error "DB 作成失敗: $createDbOut" }
     }
-    $null = psql -U postgres -p $DB_PORT -c "ALTER USER `"$DB_USER`" CREATEDB;" 2>&1
+    $null = psql -U postgres -p $DB_PORT -c "ALTER USER `"$DB_USER`" CREATEDB CREATEROLE;" 2>&1
 
     # pgvector DLL の配置 (= 自前ビルドの pgvector-pgNN-*.zip を dist_vite Releases から取得)。
     # この自前ビルドは VC++ Redistributable に依存しないため vc_redist の導入は不要。
