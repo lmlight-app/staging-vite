@@ -43,6 +43,9 @@ if ! command -v uv &>/dev/null; then
     echo " Installing uv..."
     curl -LsSf https://astral.sh/uv/install.sh | sh
     export PATH="$HOME/.local/bin:$PATH"
+else
+    # --torch-backend=auto は新しめの uv が要るので最新へ
+    uv self update 2>/dev/null || true
 fi
 
 # Build dependencies: python3-dev for Triton JIT, ffmpeg for Whisper
@@ -60,28 +63,12 @@ if [ ! -d "$INSTALL_DIR/venv" ]; then
     uv venv --python 3.12 "$INSTALL_DIR/venv"
 fi
 
-# vLLM version. Bump together with api-vllm/pyproject.toml's `vllm~=X.Y.0`
-# constraint when moving across patches. The wheels.vllm.ai host is version-
-# pathed (one URL per release), so even though pyproject is loose this script
-# pins the exact patch — keep them in sync.
-VLLM_VER=0.20.2
-
-# Detect CUDA version for vLLM wheel selection
-CUDA_MAJOR=$(nvidia-smi 2>/dev/null | grep -oP 'CUDA Version: \K\d+' || echo "12")
-echo " CUDA $CUDA_MAJOR detected, installing vLLM $VLLM_VER..."
-
-if [ "$CUDA_MAJOR" -ge 13 ]; then
-    # CUDA 13: PyPI default ships cu130 wheels — no extra index needed.
-    uv pip install --python "$INSTALL_DIR/venv/bin/python" "vllm==$VLLM_VER"
-else
-    # CUDA 12.x: pull from the cu129 wheel index (only 12.x variant
-    # vLLM publishes for $VLLM_VER; covers CUDA 12.0–12.9).
-    uv pip install --python "$INSTALL_DIR/venv/bin/python" \
-        "vllm==$VLLM_VER" \
-        --extra-index-url "https://wheels.vllm.ai/$VLLM_VER/cu129" \
-        --extra-index-url "https://download.pytorch.org/whl/cu129" \
-        --index-strategy unsafe-best-match
-fi
+# vLLM: 版は固定しない (= 常に最新 stable を PyPI から取得)。
+# --torch-backend=auto が CUDA ドライバ版を見て合う PyTorch index を自動選択
+# するので、旧方式の VLLM_VER pin / wheels.vllm.ai version-pathed index /
+# CUDA_MAJOR 手動分岐はすべて不要。version bump のたびの手修正もこれで消える。
+echo " Installing latest vLLM (torch-backend=auto)..."
+uv pip install --python "$INSTALL_DIR/venv/bin/python" vllm --torch-backend=auto
 
 uv pip install --python "$INSTALL_DIR/venv/bin/python" "openai-whisper>=20231117"
 
