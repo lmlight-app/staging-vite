@@ -123,24 +123,37 @@ DB_PASS="${DB_PASS:-digitalbase}"
 DB_NAME="${DB_NAME:-digitalbase}"
 
 if ! command -v psql &>/dev/null; then
-    echo "❌ PostgreSQL がインストールされていません。"
-    echo "   brew install postgresql@16"
-    echo "   brew services start postgresql@16"
+    echo "❌ PostgreSQL がインストールされていません (pgvector 対応・16 以降)。"
+    echo "   Homebrew:  brew install postgresql@16 pgvector && brew services start postgresql@16"
+    echo "   または:    Postgres.app (postgresapp.com) / 公式インストーラ でも可 (brew 必須ではありません)"
     exit 1
 fi
 if ! pg_isready -q 2>/dev/null; then
-    echo "❌ PostgreSQL に接続できません (localhost:5432)。"
-    echo "   brew services start postgresql@16"
+    echo "❌ PostgreSQL に接続できません (localhost:5432)。起動してください:"
+    echo "   brew services start postgresql@16   (Postgres.app なら app を起動)"
     exit 1
 fi
 
-PSQL_ADMIN="psql -U postgres"
-$PSQL_ADMIN -c "CREATE USER $DB_USER WITH PASSWORD '$DB_PASS';" 2>/dev/null || true
-$PSQL_ADMIN -c "CREATE DATABASE $DB_NAME OWNER $DB_USER;" 2>/dev/null || true
-$PSQL_ADMIN -c "ALTER USER $DB_USER CREATEDB;" 2>/dev/null || true
-if ! $PSQL_ADMIN -d $DB_NAME -c "CREATE EXTENSION IF NOT EXISTS vector;" >/dev/null 2>&1; then
+# Homebrew/Postgres.app は "postgres" ロールを作らず superuser=ログイン OS ユーザーの
+# ことが多い (psql -U postgres は role does not exist で失敗)。postgres ロールが
+# あればそれを、無ければ OS ユーザー (= 既定 superuser) で接続する。
+PG_SUPER=""
+if psql -U postgres -d postgres -tAc "SELECT 1" >/dev/null 2>&1; then
+    PG_SUPER="postgres"
+fi
+pg_admin() { psql ${PG_SUPER:+-U "$PG_SUPER"} "$@"; }
+
+# 冪等 — 既存ならスキップ。-d postgres でメンテナンス DB に接続 (OS ユーザー名の DB は無いことが多い)。
+if [ -z "$(pg_admin -d postgres -tAc "SELECT 1 FROM pg_roles WHERE rolname='$DB_USER'" 2>/dev/null)" ]; then
+    pg_admin -d postgres -c "CREATE USER $DB_USER WITH PASSWORD '$DB_PASS';" || echo "⚠️  CREATE USER $DB_USER に失敗"
+fi
+if [ -z "$(pg_admin -d postgres -tAc "SELECT 1 FROM pg_database WHERE datname='$DB_NAME'" 2>/dev/null)" ]; then
+    pg_admin -d postgres -c "CREATE DATABASE $DB_NAME OWNER $DB_USER;" || echo "⚠️  CREATE DATABASE $DB_NAME に失敗"
+fi
+pg_admin -d postgres -c "ALTER USER $DB_USER CREATEDB;" >/dev/null 2>&1 || true
+if ! pg_admin -d "$DB_NAME" -c "CREATE EXTENSION IF NOT EXISTS vector;" >/dev/null 2>&1; then
     echo "⚠️  pgvector 拡張の有効化に失敗しました。RAG 機能を使う場合は:"
-    echo "   brew install pgvector"
+    echo "   brew install pgvector   (Postgres.app は同梱のことが多い)"
 fi
 echo "✅ DB bootstrap 完了 (= schemas / tables は backend 起動時に自動作成)"
 
@@ -200,8 +213,12 @@ esac
 EOF
 chmod +x "$INSTALL_DIR/db"
 
-# Create symlink to /usr/local/bin (requires sudo)
-sudo ln -sf "$INSTALL_DIR/db" /usr/local/bin/db 2>/dev/null || echo "⚠️  Run: sudo ln -sf $INSTALL_DIR/db /usr/local/bin/db"
+# Create symlink to /usr/local/bin (root: direct, otherwise sudo)
+if [ "$(id -u)" -eq 0 ]; then
+    ln -sf "$INSTALL_DIR/db" /usr/local/bin/db 2>/dev/null || echo "⚠️  Run: ln -sf $INSTALL_DIR/db /usr/local/bin/db"
+else
+    sudo ln -sf "$INSTALL_DIR/db" /usr/local/bin/db 2>/dev/null || echo "⚠️  Run: sudo ln -sf $INSTALL_DIR/db /usr/local/bin/db"
+fi
 
 echo ""
 echo "Done. Edit $INSTALL_DIR/.env then run: db start"

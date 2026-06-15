@@ -125,25 +125,60 @@ DB_USER="${DB_USER:-digitalbase}"
 DB_PASS="${DB_PASS:-digitalbase}"
 DB_NAME="${DB_NAME:-digitalbase}"
 
+# ── Privilege helper: support root-without-sudo (minimal GPU containers) ──
+# 最小コンテナ (GMI 等の CUDA イメージ) は root 直 + sudo 未インストールが普通。
+# sudo を無条件前提にすると postgres bootstrap / symlink が黙って失敗するので分岐。
+if [ "$(id -u)" -eq 0 ]; then
+    SUDO=""
+elif command -v sudo &>/dev/null; then
+    SUDO="sudo"
+else
+    SUDO=""
+    echo "⚠️  root でも sudo でもありません。特権操作 (postgres / symlink) が失敗する可能性があります。"
+fi
+pg_admin() {
+    if [ -n "$SUDO" ]; then
+        $SUDO -u postgres psql "$@"
+    elif [ "$(id -u)" -eq 0 ]; then
+        su postgres -c "psql $(printf '%q ' "$@")"
+    else
+        psql "$@"
+    fi
+}
+
 if ! command -v psql &>/dev/null; then
-    echo "❌ PostgreSQL がインストールされていません。"
-    echo "   sudo apt install postgresql"
-    echo "   sudo systemctl start postgresql"
+    echo "❌ PostgreSQL がインストールされていません (pgvector 対応版・16 以降)。README 参照:"
+    echo "   apt install -y postgresql postgresql-\$(ls /usr/lib/postgresql 2>/dev/null | sort -V | tail -1)-pgvector"
     exit 1
 fi
+# 未起動なら自動起動を試みる (systemd 無しコンテナは pg_ctlcluster、それ以外は systemctl)
 if ! pg_isready -q 2>/dev/null; then
-    echo "❌ PostgreSQL に接続できません (localhost:5432)。"
-    echo "   sudo systemctl start postgresql"
+    if command -v pg_ctlcluster &>/dev/null; then
+        PGVER=$(ls /etc/postgresql 2>/dev/null | sort -V | tail -1)
+        [ -n "$PGVER" ] && $SUDO pg_ctlcluster "$PGVER" main start 2>/dev/null || true
+    elif command -v systemctl &>/dev/null; then
+        $SUDO systemctl start postgresql 2>/dev/null || true
+    fi
+fi
+if ! pg_isready -q 2>/dev/null; then
+    echo "❌ PostgreSQL に接続できません (localhost:5432)。手動起動してください:"
+    echo "   pg_ctlcluster <ver> main start   # systemd 無しコンテナ"
+    echo "   systemctl start postgresql       # systemd 環境"
     exit 1
 fi
 
-PSQL_ADMIN="sudo -u postgres psql"
-$PSQL_ADMIN -c "CREATE USER $DB_USER WITH PASSWORD '$DB_PASS';" 2>/dev/null || true
-$PSQL_ADMIN -c "CREATE DATABASE $DB_NAME OWNER $DB_USER;" 2>/dev/null || true
-$PSQL_ADMIN -c "ALTER USER $DB_USER CREATEDB;" 2>/dev/null || true
-if ! $PSQL_ADMIN -d $DB_NAME -c "CREATE EXTENSION IF NOT EXISTS vector;" >/dev/null 2>&1; then
+# role (冪等)
+if [ -z "$(pg_admin -tAc "SELECT 1 FROM pg_roles WHERE rolname='$DB_USER'" 2>/dev/null)" ]; then
+    pg_admin -c "CREATE USER $DB_USER WITH PASSWORD '$DB_PASS';" || echo "⚠️  CREATE USER $DB_USER に失敗"
+fi
+# database (冪等)
+if [ -z "$(pg_admin -tAc "SELECT 1 FROM pg_database WHERE datname='$DB_NAME'" 2>/dev/null)" ]; then
+    pg_admin -c "CREATE DATABASE $DB_NAME OWNER $DB_USER;" || echo "⚠️  CREATE DATABASE $DB_NAME に失敗"
+fi
+pg_admin -c "ALTER USER $DB_USER CREATEDB;" >/dev/null 2>&1 || true
+if ! pg_admin -d "$DB_NAME" -c "CREATE EXTENSION IF NOT EXISTS vector;" >/dev/null 2>&1; then
     echo "⚠️  pgvector 拡張の有効化に失敗しました。RAG 機能を使う場合は:"
-    echo "   sudo apt install postgresql-\$(psql -V | grep -oE '[0-9]+' | head -1)-pgvector"
+    echo "   apt install -y postgresql-\$(psql -V | grep -oE '[0-9]+' | head -1)-pgvector"
 fi
 echo "✅ DB bootstrap 完了 (= schemas / tables は backend 起動時に自動作成)"
 
@@ -205,8 +240,12 @@ esac
 EOF
 chmod +x "$INSTALL_DIR/db"
 
-# Create symlink to /usr/local/bin (requires sudo)
-sudo ln -sf "$INSTALL_DIR/db" /usr/local/bin/db 2>/dev/null || echo "⚠️  Run: sudo ln -sf $INSTALL_DIR/db /usr/local/bin/db"
+# Create symlink to /usr/local/bin (root: direct, non-root: sudo)
+if [ -z "$SUDO" ] && [ "$(id -u)" -ne 0 ]; then
+    echo "⚠️  Run: sudo ln -sf $INSTALL_DIR/db /usr/local/bin/db"
+else
+    $SUDO ln -sf "$INSTALL_DIR/db" /usr/local/bin/db 2>/dev/null || echo "⚠️  Run: ln -sf $INSTALL_DIR/db /usr/local/bin/db"
+fi
 
 echo ""
 echo "Done. Edit $INSTALL_DIR/.env then run: db start"
