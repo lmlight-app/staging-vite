@@ -18,6 +18,10 @@ $ErrorActionPreference = "Stop"
 
 # 設定
 $BASE_URL = if ($env:DB_BASE_URL) { $env:DB_BASE_URL } else { "https://github.com/lmlight-app/dist_vite/releases/latest/download" }
+# pgvector zip は本線 binary (x* の latest release) とは別の固定タグ release 'pgvector-latest' に
+# 置かれるため、$BASE_URL (= releases/latest/download = x*) ではなくこの専用 URL を使う。
+# dist では promote.sh が pgvector-latest → R2 vite-latest に同梱するので R2 vite-latest に書き換わる。
+$PGVECTOR_URL = if ($env:PGVECTOR_BASE_URL) { $env:PGVECTOR_BASE_URL } else { "https://github.com/lmlight-app/dist_vite/releases/download/pgvector-latest" }
 $INSTALL_DIR = if ($env:DB_INSTALL_DIR) { $env:DB_INSTALL_DIR } else { "$env:LOCALAPPDATA\db" }
 $ARCH = "amd64"  # Windows は x64 のみサポート
 
@@ -335,9 +339,9 @@ if (Get-Command psql -ErrorAction SilentlyContinue) {
         $pgMajor = (Split-Path $PG_DIR -Leaf)
         Write-Info "pgvector DLL を取得中..."
         try {
-            # 版非依存の固定名を $BASE_URL (R2) から直接取得。promote.sh が pg* release から同梱済み。
+            # 版非依存の固定名を $PGVECTOR_URL から直接取得 (staging=dist_vite の pgvector-latest release / dist=R2 vite-latest)。
             $zip = "$env:TEMP\pgvector.zip"; $extr = "$env:TEMP\pgvector_extract"
-            Invoke-WebRequest -Uri "$BASE_URL/pgvector-pg$pgMajor-windows-x64.zip" -OutFile $zip -UseBasicParsing
+            Invoke-WebRequest -Uri "$PGVECTOR_URL/pgvector-pg$pgMajor-windows-x64.zip" -OutFile $zip -UseBasicParsing
             if (Test-Path $extr) { Remove-Item -Recurse -Force $extr }
             Expand-Archive -Path $zip -DestinationPath $extr -Force
             Get-ChildItem -Path $extr -Recurse -File | ForEach-Object {
