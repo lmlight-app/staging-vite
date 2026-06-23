@@ -157,6 +157,11 @@ $DB_PORT = "5432"
 if (Get-Command psql -ErrorAction SilentlyContinue) {
     Write-Info "データベースを作成中..."
 
+    # IPv4 を明示 (= localhost は Windows で IPv6 ::1 に解決されがち。PostgreSQL が
+    # 127.0.0.1 (IPv4) でしか待ち受け/許可していないと localhost 接続が失敗する。
+    # 全 psql 呼び出しを 127.0.0.1 に固定し、IPv6/localhost 問題を回避)。
+    $env:PGHOST = "127.0.0.1"
+
     # PostgreSQL サービス起動
     $pgService = Get-Service -Name "postgresql*" -ErrorAction SilentlyContinue | Select-Object -First 1
     if ($pgService -and $pgService.Status -ne "Running") {
@@ -187,11 +192,14 @@ if (Get-Command psql -ErrorAction SilentlyContinue) {
         param([string]$Port)
         $env:PGPASSWORD = "__probe_invalid__"
         $output = psql -U postgres -p $Port -c "SELECT 1" 2>&1
-        # exit 0 = trust auth で通った / exit 2 = password auth failed (= ポート生きてる)
-        # exit 1 + "could not connect" = ポート死んでる
+        # exit 0 = trust auth で通った = ポート生存
         if ($LASTEXITCODE -eq 0) { return $true }
-        if ($output -match "password authentication failed|fe_sendauth|no password supplied") { return $true }
-        return $false
+        # サーバに到達できていれば (認証失敗 / pg_hba 拒否 / 日本語ロケール含む) ポートは生存。
+        # 旧版は英語 "password authentication failed" のみ照合 → 日本語ロケールの PostgreSQL が
+        # 日本語でエラーを返すと「応答なし」と誤判定していた (DNP 環境で発生)。locale 非依存に
+        # するため「接続自体ができない」OS レベルの失敗パターンのみ false にする。
+        if ($output -match "could not connect|Connection refused|No connection could be made|actively refused|could not translate host|timeout expired|timed out|10061|接続できませ|接続が拒否|応答しません|タイムアウト") { return $false }
+        return $true
     }
 
     if (Test-PgPort -Port "5432") {
@@ -203,6 +211,19 @@ if (Get-Command psql -ErrorAction SilentlyContinue) {
     }
     Write-Info "PostgreSQL ポート: $DB_PORT"
 
+    # 既に DB_USER/DB_NAME が用意済みで DB_USER 自身で接続できるなら、postgres スーパーユーザ
+    # 手順 (パスワード解決 + CREATE USER/DATABASE + 所有権付け替え) は不要。DBA や手動で事前
+    # 構築した環境向け (= postgres ロールが無い / パスワード不明 / pg_hba で postgres 拒否でも通る)。
+    # pgvector は trusted extension なので DB 所有者である DB_USER で有効化できる。
+    $dbProvisioned = $false
+    $env:PGPASSWORD = $DB_PASSWORD
+    $null = psql -U $DB_USER -p $DB_PORT -d $DB_NAME -c "SELECT 1" 2>$null
+    if ($LASTEXITCODE -eq 0) {
+        $dbProvisioned = $true
+        Write-Success "既存のデータベース ($DB_USER/$DB_NAME) を検出 - postgres 管理者セットアップをスキップします"
+    }
+
+    if (-not $dbProvisioned) {
     # postgres パスワード解決
     $pgSuperPassword = $null
     foreach ($candidate in @("postgres", $DB_PASSWORD, "")) {
@@ -287,8 +308,11 @@ if (Get-Command psql -ErrorAction SilentlyContinue) {
         if ($LASTEXITCODE -ne 0) { Write-Error "DB 作成失敗: $createDbOut" }
     }
     $null = psql -U postgres -p $DB_PORT -c "ALTER USER `"$DB_USER`" CREATEDB;" 2>&1
+    }  # end if (-not $dbProvisioned) — postgres 管理者によるユーザ/DB 作成
 
-    # pgvector DLL の配置 (= 自前ビルドの pgvector-pgNN-*.zip を dist_vite Releases から取得)。
+    # pgvector DLL の配置 (= 自前ビルドの pgvector-pg<major>-windows-x64.zip を取得)。
+    # zip は release-pgvector-windows.yml が pg* release に publish し、promote.sh が
+    # R2 ($BASE_URL = vite-latest) に同梱する。バイナリと同じ R2 経路から取得する。
     # この自前ビルドは VC++ Redistributable に依存しないため vc_redist の導入は不要。
     # Program Files\PostgreSQL への配置は admin が要るが、権限が無ければ Warn して
     # RAG を無効化し続行する (= 昇格はしない。post-install.ps1 と同方式)。
@@ -311,11 +335,9 @@ if (Get-Command psql -ErrorAction SilentlyContinue) {
         $pgMajor = (Split-Path $PG_DIR -Leaf)
         Write-Info "pgvector DLL を取得中..."
         try {
-            $releases = Invoke-RestMethod -Uri "https://api.github.com/repos/lmlight-app/dist_vite/releases" -UseBasicParsing -Headers @{ "User-Agent" = "lmlight-installer" }
-            $asset = $releases | ForEach-Object { $_.assets } | Where-Object { $_.name -like "pgvector-pg$pgMajor-*.zip" } | Select-Object -First 1
-            if (-not $asset) { throw "PostgreSQL $pgMajor 用の pgvector アセットが見つかりません" }
+            # 版非依存の固定名を $BASE_URL (R2) から直接取得。promote.sh が pg* release から同梱済み。
             $zip = "$env:TEMP\pgvector.zip"; $extr = "$env:TEMP\pgvector_extract"
-            Invoke-WebRequest -Uri $asset.browser_download_url -OutFile $zip -UseBasicParsing
+            Invoke-WebRequest -Uri "$BASE_URL/pgvector-pg$pgMajor-windows-x64.zip" -OutFile $zip -UseBasicParsing
             if (Test-Path $extr) { Remove-Item -Recurse -Force $extr }
             Expand-Archive -Path $zip -DestinationPath $extr -Force
             Get-ChildItem -Path $extr -Recurse -File | ForEach-Object {
@@ -336,7 +358,10 @@ if (Get-Command psql -ErrorAction SilentlyContinue) {
         Write-Success "pgvector は既に配置済みです"
     }
 
-    $extensionOut = psql -U postgres -p $DB_PORT -d $DB_NAME -c "CREATE EXTENSION IF NOT EXISTS vector;" 2>&1
+    # 拡張有効化は適切な権限で実行: provisioned なら DB 所有者 DB_USER (trusted ext)、
+    # 新規構築なら postgres。
+    if ($dbProvisioned) { $env:PGPASSWORD = $DB_PASSWORD; $extUser = $DB_USER } else { $env:PGPASSWORD = $pgSuperPassword; $extUser = "postgres" }
+    $extensionOut = psql -U $extUser -p $DB_PORT -d $DB_NAME -c "CREATE EXTENSION IF NOT EXISTS vector;" 2>&1
     if ($LASTEXITCODE -ne 0) {
         Write-Warn "pgvector 拡張が無効のため RAG (ベクトル検索) は無効化されます (= DLL 未配置 / 権限不足)"
     } else {
@@ -346,6 +371,8 @@ if (Get-Command psql -ErrorAction SilentlyContinue) {
     # 既存テーブル/シーケンスの所有者を app user ($DB_USER) に揃える (= postgres 権限がある今のうちに)。
     # 旧 install で postgres 所有のまま残った DB を救済し、起動時の migrations.py ($DB_USER 接続) が
     # ALTER / CREATE INDEX できるようにする。新規 DB は対象ゼロで無害、冪等。
+    # provisioned (DB_USER で構築済み) なら所有権は既に揃っており postgres 権限も無いのでスキップ。
+    if (-not $dbProvisioned) {
     $reassignSql = @"
 DO `$`$
 DECLARE r record;
@@ -361,6 +388,7 @@ BEGIN
 END `$`$;
 "@
     $null = $reassignSql | psql -U postgres -p $DB_PORT -d $DB_NAME 2>$null
+    }  # end if (-not $dbProvisioned) — 所有権付け替え
 
     $ErrorActionPreference = "Stop"
 
@@ -414,7 +442,7 @@ if (-not (Test-Path "$INSTALL_DIR\.env")) {
 # Backend selection (= unified codebase で env で切替)
 LLM_BACKEND=ollama
 
-DATABASE_URL=postgresql://${DB_USER}:${DB_PASSWORD}@localhost:${DB_PORT}/${DB_NAME}
+DATABASE_URL=postgresql://${DB_USER}:${DB_PASSWORD}@127.0.0.1:${DB_PORT}/${DB_NAME}
 OLLAMA_BASE_URL=http://localhost:11434
 # OLLAMA_NUM_PARALLEL=8
 # Ollama daemon の num_ctx (default 2048 → 16384) - document 出力切れ防止
