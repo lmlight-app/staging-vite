@@ -189,21 +189,14 @@ if (Get-Command psql -ErrorAction SilentlyContinue) {
         return ($LASTEXITCODE -eq 0)
     }
 
-    # まずポート決定 (5432 → 5433)。認証は別途解決するので、ここでは
-    # libpq が「password authentication failed」を返してくれれば
-    # ポート自体は届いていると判断する。
+    # ポート検出は pg_isready (終了コードのみ)。Linux 版 (install-linux.sh) と同じく
+    # エラーメッセージを一切パースしないため locale 非依存・認証不要。pg_isready は
+    # PostgreSQL 同梱で PATH 上にある (psql と同じ bin)。
+    # exit 0 = 接続受付中 (生存) / 2 = 応答なし (ポート違い・未起動)。
     function Test-PgPort {
         param([string]$Port)
-        $env:PGPASSWORD = "__probe_invalid__"
-        $output = psql -U postgres -p $Port -c "SELECT 1" 2>&1
-        # exit 0 = trust auth で通った = ポート生存
-        if ($LASTEXITCODE -eq 0) { return $true }
-        # サーバに到達できていれば (認証失敗 / pg_hba 拒否 / 日本語ロケール含む) ポートは生存。
-        # 旧版は英語 "password authentication failed" のみ照合 → 日本語ロケールの PostgreSQL が
-        # 日本語でエラーを返すと「応答なし」と誤判定していた (DNP 環境で発生)。locale 非依存に
-        # するため「接続自体ができない」OS レベルの失敗パターンのみ false にする。
-        if ($output -match "could not connect|Connection refused|No connection could be made|actively refused|could not translate host|timeout expired|timed out|10061|接続できませ|接続が拒否|応答しません|タイムアウト") { return $false }
-        return $true
+        & pg_isready -h 127.0.0.1 -p $Port -q 2>$null
+        return ($LASTEXITCODE -eq 0)
     }
 
     if (Test-PgPort -Port "5432") {
@@ -304,12 +297,13 @@ if (Get-Command psql -ErrorAction SilentlyContinue) {
     $roleExists = psql -U postgres -p $DB_PORT -tAc "SELECT 1 FROM pg_roles WHERE rolname='$DB_USER'" 2>$null
     if (("$roleExists").Trim() -ne "1") {
         $createUserOut = psql -U postgres -p $DB_PORT -c "CREATE USER `"$DB_USER`" WITH PASSWORD '$DB_PASSWORD';" 2>&1
-        if ($LASTEXITCODE -ne 0) { Write-Error "ユーザー作成失敗: $createUserOut" }
+        # bootstrap は best-effort (Linux 版と同様)。失敗しても止めず、起動時の migrations.py に委ねる。
+        if ($LASTEXITCODE -ne 0) { Write-Warn "ユーザー作成に失敗しました (続行します): $createUserOut" }
     }
     $dbExists = psql -U postgres -p $DB_PORT -tAc "SELECT 1 FROM pg_database WHERE datname='$DB_NAME'" 2>$null
     if (("$dbExists").Trim() -ne "1") {
         $createDbOut = psql -U postgres -p $DB_PORT -c "CREATE DATABASE `"$DB_NAME`" OWNER `"$DB_USER`";" 2>&1
-        if ($LASTEXITCODE -ne 0) { Write-Error "DB 作成失敗: $createDbOut" }
+        if ($LASTEXITCODE -ne 0) { Write-Warn "DB 作成に失敗しました (続行します): $createDbOut" }
     }
     $null = psql -U postgres -p $DB_PORT -c "ALTER USER `"$DB_USER`" CREATEDB;" 2>&1
     }  # end if (-not $dbProvisioned) — postgres 管理者によるユーザ/DB 作成
