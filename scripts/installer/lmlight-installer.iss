@@ -16,7 +16,6 @@
 #define AppName "AI Server"
 #define AppVersion "1.0.0"
 #define AppPublisher "AI Server"
-#define AppURL "https://lmlight.app"
 ; CI artefact filename. Once installed it gets renamed to api.exe so
 ; the legacy `irm | iex` flow's post-install logic + Start scripts
 ; (`db start` etc) work without the EXE installer needing parallel
@@ -31,9 +30,6 @@ AppId={{6E7B1F2C-4A8D-4F1E-B5C7-8D9E0A1B2C3D}
 AppName={#AppName}
 AppVersion={#AppVersion}
 AppPublisher={#AppPublisher}
-AppPublisherURL={#AppURL}
-AppSupportURL={#AppURL}
-AppUpdatesURL={#AppURL}
 ; Install location matches the legacy `irm | iex` flow ($env:LOCALAPPDATA\db)
 ; so existing PowerShell-installed users can upgrade in place by re-running
 ; the EXE — same .env, same DB credentials.
