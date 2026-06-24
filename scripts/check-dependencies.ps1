@@ -64,8 +64,6 @@ function Show-InstallInstructions {
     Write-Host "  ライセンスファイルを以下に配置してください:"
     Write-Host "    $PSScriptRoot\..\license.lic"
     Write-Host ""
-    Write-Host "  ライセンス購入: https://digital-base.co.jp/services/localllm/lmlight-purchase" -ForegroundColor Cyan
-    Write-Host ""
 
     # Keep window open
     Write-Host "Press any key to exit..."
