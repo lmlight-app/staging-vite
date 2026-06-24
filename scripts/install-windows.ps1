@@ -47,9 +47,7 @@ function Write-Error { param($msg) Write-Host "[エラー] $msg" -ForegroundColo
 function Write-Warn { param($msg) Write-Host "[警告] $msg" -ForegroundColor Yellow }
 
 Write-Host ""
-Write-Host "╔═══════════════════════════════════════════════════════╗" -ForegroundColor Blue
-Write-Host "║      AI Server インストーラー for Windows             ║" -ForegroundColor Blue
-Write-Host "╚═══════════════════════════════════════════════════════╝" -ForegroundColor Blue
+Write-Host "AI Server インストーラー for Windows" -ForegroundColor Blue
 Write-Host ""
 
 Write-Info "アーキテクチャ: $ARCH"
@@ -671,9 +669,7 @@ if ($isRunning) {
 Set-Content -Path "$INSTALL_DIR\toggle.ps1" -Value $TOGGLE_SCRIPT -Encoding UTF8
 
 Write-Host ""
-Write-Host "╔═══════════════════════════════════════════════════════╗" -ForegroundColor Green
-Write-Host "║     AI Server のインストールが完了しました！          ║" -ForegroundColor Green
-Write-Host "╚═══════════════════════════════════════════════════════╝" -ForegroundColor Green
+Write-Host "AI Server のインストールが完了しました" -ForegroundColor Green
 Write-Host ""
 
 if ($MISSING_DEPS.Count -gt 0) {
