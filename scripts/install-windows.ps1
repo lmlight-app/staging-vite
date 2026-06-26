@@ -1,4 +1,4 @@
-# AI Server インストーラー for Windows (Vite Edition)
+﻿# AI Server インストーラー for Windows (Vite Edition)
 # 使い方: irm https://raw.githubusercontent.com/lmlight-app/staging-vite/main/scripts/install-windows.ps1 | iex
 
 $ErrorActionPreference = "Stop"
