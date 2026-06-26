@@ -37,6 +37,9 @@ curl -fsSL https://raw.githubusercontent.com/lmlight-app/staging-vite/main/scrip
 ### Windows
 
 ```powershell
+# 環境設定（管理者 PowerShell。Linux の apt / macOS の brew 相当。PostgreSQL/pgvector/Ollama 導入）
+irm https://raw.githubusercontent.com/lmlight-app/staging-vite/main/scripts/setup-windows.ps1 | iex
+# 本体（通常ユーザー）
 irm https://raw.githubusercontent.com/lmlight-app/staging-vite/main/scripts/install-windows.ps1 | iex
 ```
 

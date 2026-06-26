@@ -7,21 +7,16 @@ $ErrorActionPreference = "Stop"
 [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
 
 # ============================================================
-# 実行権限について (= 管理者強制はしない)
+# 実行権限について
 # ============================================================
-# アプリ本体は %LOCALAPPDATA%\db (ユーザー書込可) に入るため admin 不要で、
-# 通常ユーザーのまま最後まで実行する (= 旧挙動に復帰)。
-# admin が要る処理 (pgvector の vector.dll を Program Files\PostgreSQL に配置
-# 等) は権限が無ければ警告のみで続行し、RAG (ベクトル検索) を無効化する
-# (= graceful degrade)。RAG を使う場合のみ「管理者として実行」で再実行するか
-# pgvector を手動導入する。pgvector の扱いは別途整理予定。
+# これは「本体インストール」(フェーズ2)。%LOCALAPPDATA%\db に入るため admin 不要。
+# 前提ソフト (PostgreSQL / pgvector / Ollama) の導入は別フェーズ:
+#   先に管理者 PowerShell で setup-windows.ps1 を実行する
+#   (= Linux の `apt install postgresql …-pgvector` / macOS の `brew install …` に相当)。
+# pgvector DLL 配置など admin が要る処理は setup-windows.ps1 側に集約済み。
 
 # 設定
 $BASE_URL = if ($env:DB_BASE_URL) { $env:DB_BASE_URL } else { "https://github.com/lmlight-app/dist_vite/releases/latest/download" }
-# pgvector zip は本線 binary (x* の latest release) とは別の固定タグ release 'pgvector-latest' に
-# 置かれるため、$BASE_URL (= releases/latest/download = x*) ではなくこの専用 URL を使う。
-# dist では promote.sh が pgvector-latest → R2 vite-latest に同梱するので R2 vite-latest に書き換わる。
-$PGVECTOR_URL = if ($env:PGVECTOR_BASE_URL) { $env:PGVECTOR_BASE_URL } else { "https://github.com/lmlight-app/dist_vite/releases/download/pgvector-latest" }
 $INSTALL_DIR = if ($env:DB_INSTALL_DIR) { $env:DB_INSTALL_DIR } else { "$env:LOCALAPPDATA\db" }
 $ARCH = "amd64"  # Windows は x64 のみサポート
 
@@ -40,18 +35,15 @@ if (Test-Path "$INSTALL_DIR\.env") {
     }
 }
 
-# カラー定義（PowerShell）
+# 出力ヘルパー。Windows コンソール (PowerShell 5.1 / 既定 CP932) では emoji(✅/⚠️) が
+# □・? に化けるため、emoji は使わず ASCII タグ + 色で表す (日本語は CP932 で表示可)。
+# Linux/macOS 側は UTF-8 端末なので emoji を使う。OS で表現が違うのは意図的。
 function Write-Info { param($msg) Write-Host "[情報] $msg" -ForegroundColor Blue }
 function Write-Success { param($msg) Write-Host "[OK] $msg" -ForegroundColor Green }
 function Write-Error { param($msg) Write-Host "[エラー] $msg" -ForegroundColor Red; exit 1 }
 function Write-Warn { param($msg) Write-Host "[警告] $msg" -ForegroundColor Yellow }
 
-Write-Host ""
-Write-Host "AI Server インストーラー for Windows" -ForegroundColor Blue
-Write-Host ""
-
-Write-Info "アーキテクチャ: $ARCH"
-Write-Info "インストール先: $INSTALL_DIR"
+Write-Host "Installing AI Server for Windows ($ARCH) to $INSTALL_DIR..."
 
 # ディレクトリ作成
 New-Item -ItemType Directory -Force -Path "$INSTALL_DIR" | Out-Null
@@ -120,32 +112,13 @@ if ((Get-Command tesseract -ErrorAction SilentlyContinue) -or (Test-Path "C:\Pro
     $MISSING_DEPS += "tesseract"
 }
 
-# winget で依存関係をインストール (任意 / opt-in)。非 admin だと machine install は
-# 失敗しうるが、その場合も停止せず後続の検出で「未導入」として案内・続行する。
-if ($MISSING_DEPS.Count -gt 0) {
-    Write-Info "不足している依存関係を自動インストールしますか？ (Y/n)"
-    $response = Read-Host
-    if ($response -eq "" -or $response -eq "Y" -or $response -eq "y") {
-        foreach ($dep in $MISSING_DEPS) {
-            switch ($dep) {
-                "postgresql" {
-                    Write-Info "PostgreSQL をインストール中..."
-                    winget install -e --id PostgreSQL.PostgreSQL --silent --accept-package-agreements --accept-source-agreements
-                }
-                "ollama" {
-                    Write-Info "Ollama をインストール中..."
-                    $null = winget install -e --id Ollama.Ollama --silent --accept-package-agreements --accept-source-agreements 2>&1
-                    if ($LASTEXITCODE -eq 0) {
-                        Write-Success "Ollama をインストールしました"
-                    }
-                }
-                "tesseract" {
-                    Write-Info "Tesseract OCR をインストール中..."
-                    Write-Warn "Tesseract は手動インストールが必要です: https://github.com/UB-Mannheim/tesseract/wiki"
-                }
-            }
-        }
-    }
+# 前提ソフトが無ければ環境設定 (setup-windows.ps1) を先に実行するよう促す。
+# 本体 install ではソフト導入をしない (= Linux が「apt install postgresql …」と案内するのと同じ思想)。
+if ($MISSING_DEPS -contains "postgresql" -or $MISSING_DEPS -contains "ollama") {
+    Write-Error "前提ソフトが未導入です ($($MISSING_DEPS -join ', '))。`n先に管理者 PowerShell で環境設定を実行してください:`n  irm https://raw.githubusercontent.com/lmlight-app/staging-vite/main/scripts/setup-windows.ps1 | iex"
+}
+if ($MISSING_DEPS -contains "tesseract") {
+    Write-Warn "Tesseract OCR 未導入 (オプション: 画像OCR用)。必要なら setup-windows.ps1 で導入されます。"
 }
 
 # ============================================================
@@ -306,53 +279,9 @@ if (Get-Command psql -ErrorAction SilentlyContinue) {
     $null = psql -U postgres -p $DB_PORT -c "ALTER USER `"$DB_USER`" CREATEDB;" 2>&1
     }  # end if (-not $dbProvisioned) — postgres 管理者によるユーザ/DB 作成
 
-    # pgvector DLL の配置 (= 自前ビルドの pgvector-pg<major>-windows-x64.zip を取得)。
-    # zip は release-pgvector-windows.yml が pg* release に publish し、promote.sh が
-    # R2 ($BASE_URL = vite-latest) に同梱する。バイナリと同じ R2 経路から取得する。
-    # この自前ビルドは VC++ Redistributable に依存しないため vc_redist の導入は不要。
-    # Program Files\PostgreSQL への配置は admin が要るが、権限が無ければ Warn して
-    # RAG を無効化し続行する (= 昇格はしない。post-install.ps1 と同方式)。
-    # PostgreSQL ルートをバージョン非依存で自動検出 (= 13/19/将来版も拾う)。
-    # 1) C:\Program Files\PostgreSQL\<版> のうち psql.exe を持つ最新版
-    # 2) 見つからなければ PATH 上の psql から推定 (= 非標準パスの自前 install 対応)
-    $PG_DIR = $null
-    $pgBase = "C:\Program Files\PostgreSQL"
-    if (Test-Path $pgBase) {
-        $PG_DIR = Get-ChildItem $pgBase -Directory -ErrorAction SilentlyContinue |
-            Where-Object { Test-Path "$($_.FullName)\bin\psql.exe" } |
-            Sort-Object { [int]($_.Name -replace '\D', '') } -Descending |
-            Select-Object -First 1 -ExpandProperty FullName
-    }
-    if (-not $PG_DIR) {
-        $psqlCmd = Get-Command psql -ErrorAction SilentlyContinue
-        if ($psqlCmd) { $PG_DIR = Split-Path (Split-Path $psqlCmd.Source -Parent) -Parent }
-    }
-    if ($PG_DIR -and -not (Test-Path "$PG_DIR\lib\vector.dll")) {
-        $pgMajor = (Split-Path $PG_DIR -Leaf)
-        Write-Info "pgvector DLL を取得中..."
-        try {
-            # 版非依存の固定名を $PGVECTOR_URL から直接取得 (staging=dist_vite の pgvector-latest release / dist=R2 vite-latest)。
-            $zip = "$env:TEMP\pgvector.zip"; $extr = "$env:TEMP\pgvector_extract"
-            Invoke-WebRequest -Uri "$PGVECTOR_URL/pgvector-pg$pgMajor-windows-x64.zip" -OutFile $zip -UseBasicParsing
-            if (Test-Path $extr) { Remove-Item -Recurse -Force $extr }
-            Expand-Archive -Path $zip -DestinationPath $extr -Force
-            Get-ChildItem -Path $extr -Recurse -File | ForEach-Object {
-                $rel = $_.FullName.Substring($extr.Length).TrimStart('\')
-                $dst = Join-Path $PG_DIR $rel
-                New-Item -ItemType Directory -Force -Path (Split-Path $dst) | Out-Null
-                Copy-Item -Force $_.FullName $dst -ErrorAction Stop
-            }
-            Remove-Item $zip, $extr -Recurse -Force -ErrorAction SilentlyContinue
-            Write-Success "pgvector をインストールしました"
-        } catch [System.UnauthorizedAccessException] {
-            Write-Warn "pgvector DLL の配置に権限がありません ($PG_DIR\lib)。RAG (ベクトル検索) は無効化されます。"
-            Write-Warn "RAG を使う場合は管理者で再実行するか、Docker 版 (pgvector 同梱) を利用してください。"
-        } catch {
-            Write-Warn "pgvector の取得に失敗しました: $($_.Exception.Message)。RAG は無効化されます。"
-        }
-    } elseif ($PG_DIR) {
-        Write-Success "pgvector は既に配置済みです"
-    }
+    # pgvector の DLL/拡張ファイルは環境設定 (setup-windows.ps1) で配置済みの前提
+    # (= Linux の apt …-pgvector に相当)。ここでは拡張の有効化のみ行う。
+    # 未配置なら下の CREATE EXTENSION が警告して RAG 無効のまま続行する。
 
     # 拡張有効化は適切な権限で実行: provisioned なら DB 所有者 DB_USER (trusted ext)、
     # 新規構築なら postgres。
@@ -672,14 +601,9 @@ Write-Host ""
 Write-Host "AI Server のインストールが完了しました" -ForegroundColor Green
 Write-Host ""
 
-if ($MISSING_DEPS.Count -gt 0) {
-    Write-Warn "不足している依存関係: $($MISSING_DEPS -join ', ')"
+if ($MISSING_DEPS -contains "tesseract") {
     Write-Host ""
-    Write-Host "  winget でインストール:"
-    if ($MISSING_DEPS -contains "nodejs") { Write-Host "    winget install OpenJS.NodeJS.LTS" }
-    if ($MISSING_DEPS -contains "postgresql") { Write-Host "    winget install PostgreSQL.PostgreSQL" }
-    if ($MISSING_DEPS -contains "ollama") { Write-Host "    winget install Ollama.Ollama" }
-    if ($MISSING_DEPS -contains "tesseract") { Write-Host "    Tesseract: https://github.com/UB-Mannheim/tesseract/wiki  # オプション: 画像OCR用" }
+    Write-Warn "Tesseract OCR が未導入です (オプション: 画像OCR用)。必要なら setup-windows.ps1 で導入できます。"
     Write-Host ""
 }
 
