@@ -35,7 +35,21 @@ pg_admin() {
 
 mkdir -p "$INSTALL_DIR"
 
+# 更新時: 稼働中の旧プロセスを止める (systemd unit → 従来 stop.sh の順。binary 上書きの text busy 防止)
+WAS_ACTIVE=0; { systemctl is-active --quiet db 2>/dev/null || systemctl is-active --quiet digitalbase 2>/dev/null; } && WAS_ACTIVE=1
+command -v systemctl &>/dev/null && $SUDO systemctl stop db digitalbase 2>/dev/null || true
 [ -f "$INSTALL_DIR/stop.sh" ] && "$INSTALL_DIR/stop.sh" 2>/dev/null || true
+# 停止確認: 同 dir 起動の api が残っていれば中断 (稼働 binary への上書きは破損リスク)
+if [ -d "$INSTALL_DIR" ]; then
+    _RP="$(cd "$INSTALL_DIR" && pwd -P)"
+    for p in $(pgrep -fx "./api" 2>/dev/null; pgrep -fx "$_RP/api" 2>/dev/null); do
+        if [ "$(readlink /proc/$p/cwd 2>/dev/null)" = "$_RP" ]; then
+            echo "❌ 稼働中のプロセスを停止できませんでした。先に停止してから再実行してください:"
+            echo "   sudo systemctl stop db   (または $INSTALL_DIR/stop.sh)"
+            exit 1
+        fi
+    done
+fi
 
 # Download unified backend binary (= api/ 統一、LLM_BACKEND=vllm で vllm mode)
 echo " Downloading AI Server backend..."
@@ -184,7 +198,8 @@ if ! pg_admin -d "$DB_NAME" -c "CREATE EXTENSION IF NOT EXISTS vector;" >/dev/nu
 fi
 echo "✅ DB bootstrap 完了 (= schemas / tables は backend 起動時に自動作成)"
 
-cat > "$INSTALL_DIR/start.sh" << 'EOF'
+# 正準起動 (= systemd ExecStart と start.sh の共用。env 読込 + 前処理 + exec api)
+cat > "$INSTALL_DIR/run.sh" << 'EOF'
 #!/bin/bash
 cd "$(dirname "$0")"
 set -a; [ -f .env ] && source .env; set +a
@@ -192,6 +207,21 @@ set -a; [ -f .env ] && source .env; set +a
 # CUDA 13+: Triton bundled ptxas is CUDA 12, need system ptxas
 CUDA_MAJOR=$(nvidia-smi 2>/dev/null | grep -oP 'CUDA Version: \K\d+' || true)
 [ "${CUDA_MAJOR:-0}" -ge 13 ] && [ -f /usr/local/cuda/bin/ptxas ] && export TRITON_PTXAS_PATH=/usr/local/cuda/bin/ptxas
+
+exec ./api
+EOF
+chmod +x "$INSTALL_DIR/run.sh"
+
+cat > "$INSTALL_DIR/start.sh" << 'EOF'
+#!/bin/bash
+cd "$(dirname "$0")"
+set -a; [ -f .env ] && source .env; set +a
+
+# systemd 管理中は二重起動しない (= unit 経由に誘導)
+if systemctl is-active --quiet db 2>/dev/null; then
+    echo "db.service が稼働中です。操作は: db {start|stop|restart|status|logs}"
+    exit 1
+fi
 
 # Check dependencies
 
@@ -202,14 +232,20 @@ if ! command -v nvidia-smi &>/dev/null; then
     echo "⚠️  nvidia-smi not found. vLLM requires NVIDIA GPU with CUDA."
 fi
 
-# Stop existing
-pkill -f "db.*api" 2>/dev/null; sleep 1
+# Stop existing (= pidfile 優先、fallback は同 dir 起動の api のみ = 他 install を巻き添えにしない)
+[ -f api.pid ] && kill "$(cat api.pid)" 2>/dev/null
+HERE="$(pwd -P)"
+for p in $(pgrep -fx "./api" 2>/dev/null; pgrep -fx "$HERE/api" 2>/dev/null); do
+    [ "$(readlink /proc/$p/cwd 2>/dev/null)" = "$HERE" ] && kill "$p" 2>/dev/null
+done
+sleep 1
 
 echo "🚀 Starting AI Server (vLLM Edition)..."
 
-# Single process: API + Web frontend
-./api &
+# Single process: API + Web frontend (run.sh は exec するので PID = api 本体)
+./run.sh &
 API_PID=$!
+echo "$API_PID" > api.pid
 
 echo "✅ Started - http://localhost:${API_PORT:-8000}"
 
@@ -230,26 +266,88 @@ echo "📡 vLLM endpoints: chat=${VLLM_BASE_URL:-http://localhost:8080}, embed=$
 echo ""
 echo "Press Ctrl+C to stop"
 
-trap "kill $API_PID 2>/dev/null; echo 'Stopped'" EXIT
+trap "kill $API_PID 2>/dev/null; rm -f api.pid; echo 'Stopped'" EXIT
 wait
 EOF
 chmod +x "$INSTALL_DIR/start.sh"
 
 cat > "$INSTALL_DIR/stop.sh" << 'EOF'
 #!/bin/bash
+cd "$(dirname "$0")"
+# systemd 管理中は unit を止める (止められなければ偽の Stopped を出さない)
+if systemctl is-active --quiet db 2>/dev/null; then
+    SCTL="systemctl"; [ "$(id -u)" -ne 0 ] && command -v sudo &>/dev/null && SCTL="sudo -n systemctl"
+    $SCTL stop db && { echo "Stopped (systemd)"; exit 0; }
+    echo "Failed to stop db.service (root required): sudo systemctl stop db"; exit 1
+fi
 # Kill start.sh first (which will trigger its trap to kill API/Web)
 pkill -f "db/start\.sh" 2>/dev/null
 sleep 1
-# Clean up any remaining processes
-pkill -f "\./api$" 2>/dev/null
+# Clean up any remaining processes (= pidfile 優先、fallback は同 dir 起動の api のみ)
+[ -f api.pid ] && kill "$(cat api.pid)" 2>/dev/null && rm -f api.pid
+HERE="$(pwd -P)"
+for p in $(pgrep -fx "./api" 2>/dev/null; pgrep -fx "$HERE/api" 2>/dev/null); do
+    [ "$(readlink /proc/$p/cwd 2>/dev/null)" = "$HERE" ] && kill "$p" 2>/dev/null
+done
 echo "Stopped"
 EOF
 chmod +x "$INSTALL_DIR/stop.sh"
 
-# Create db CLI script
+# ── systemd unit (サーバ標準: ブート自動起動 + クラッシュ自動復帰 + 確実な再起動) ──
+SYSTEMD_OK=0
+if [ -d /run/systemd/system ] && command -v systemctl &>/dev/null && { [ "$(id -u)" -eq 0 ] || [ -n "$SUDO" ]; }; then
+    UNIT_TMP=$(mktemp)
+    cat > "$UNIT_TMP" << UNIT
+[Unit]
+Description=DigitalBase AI Server
+After=network-online.target postgresql.service
+Wants=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=$(id -un)
+WorkingDirectory=$INSTALL_DIR
+ExecStart=$INSTALL_DIR/run.sh
+Restart=always
+RestartSec=5
+TimeoutStopSec=30
+LimitNOFILE=65535
+SyslogIdentifier=db
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+    if $SUDO install -o root -g root -m 644 "$UNIT_TMP" /etc/systemd/system/db.service \
+        && $SUDO systemctl daemon-reload; then
+        rm -f "$UNIT_TMP"
+        $SUDO systemctl enable db >/dev/null 2>&1 || true
+        $SUDO systemctl disable digitalbase >/dev/null 2>&1 || true  # 旧unitのboot起動を止める(二重bind防止)
+        SYSTEMD_OK=1
+        echo "✅ systemd unit 登録 (db.service = ブート自動起動 + クラッシュ自動復帰)"
+    else
+        rm -f "$UNIT_TMP"
+        echo "⚠️  systemd unit の登録に失敗しました (従来の start.sh 起動で動作します)"
+    fi
+fi
+
+# Create db CLI script (= systemd unit があれば systemctl 管理、無ければ従来 script)
 cat > "$INSTALL_DIR/db" << 'EOF'
 #!/bin/bash
 DB_HOME="${DB_HOME:-$HOME/.local/db}"
+if [ -f /etc/systemd/system/db.service ] && [ -d /run/systemd/system ]; then
+    SCTL="systemctl"; JCTL="journalctl"
+    [ "$(id -u)" -ne 0 ] && command -v sudo &>/dev/null && { SCTL="sudo systemctl"; JCTL="sudo journalctl"; }
+    case "$1" in
+        start)   $SCTL start db ;;
+        stop)    $SCTL stop db ;;
+        restart) $SCTL restart db ;;
+        status)  $SCTL status db --no-pager ;;
+        logs)    $JCTL -u db -f ;;
+        *)       echo "Usage: db {start|stop|restart|status|logs}"; exit 1 ;;
+    esac
+    exit $?
+fi
 case "$1" in
     start) "$DB_HOME/start.sh" ;;
     stop)  "$DB_HOME/stop.sh" ;;
@@ -266,7 +364,11 @@ else
 fi
 
 echo ""
+if [ "$SYSTEMD_OK" -eq 1 ] && [ "${WAS_ACTIVE:-0}" -eq 1 ]; then
+    $SUDO systemctl start db 2>/dev/null && echo "✅ 更新完了、db.service を再開しました" || true
+fi
 echo "Done. Edit $INSTALL_DIR/.env then run: db start"
+[ "$SYSTEMD_OK" -eq 1 ] && echo "      (systemd 管理: ブート時自動起動。ログは db logs / journalctl -u db)"
 echo ""
 echo "Note: vLLM requires NVIDIA GPU with CUDA."
 echo "      First run will download models from HuggingFace (~3GB)."
