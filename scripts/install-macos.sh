@@ -107,14 +107,20 @@ set -a; [ -f .env ] && source .env; set +a
 pg_isready -q 2>/dev/null || { echo "❌ PostgreSQL not running"; exit 1; }
 pgrep -x ollama >/dev/null || { ollama serve &>/dev/null & sleep 2; }
 
-# Stop existing
-pkill -f "\./api$" 2>/dev/null; sleep 1
+# Stop existing (= pidfile 優先、fallback は同 dir 起動の api のみ = 他 install を巻き添えにしない)
+[ -f api.pid ] && kill "$(cat api.pid)" 2>/dev/null
+HERE="$(pwd -P)"
+for p in $(pgrep -fx "./api" 2>/dev/null; pgrep -fx "$HERE/api" 2>/dev/null); do
+    [ "$(lsof -a -p "$p" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p')" = "$HERE" ] && kill "$p" 2>/dev/null
+done
+sleep 1
 
 echo "🚀 Starting AI Server..."
 
 # Single process: API + Web frontend
 ./api &
 API_PID=$!
+echo "$API_PID" > api.pid
 
 echo "✅ Started - http://localhost:${API_PORT:-8000}"
 
@@ -128,16 +134,22 @@ echo "🌐 mDNS: http://$(hostname).local:${API_PORT:-8000}"
 echo ""
 echo "Press Ctrl+C to stop"
 
-trap "kill $API_PID 2>/dev/null; echo 'Stopped'" EXIT
+trap "kill $API_PID 2>/dev/null; rm -f api.pid; echo 'Stopped'" EXIT
 wait
 EOF
 chmod +x "$INSTALL_DIR/start.sh"
 
 cat > "$INSTALL_DIR/stop.sh" << 'EOF'
 #!/bin/bash
+cd "$(dirname "$0")"
 pkill -f "db/start\.sh" 2>/dev/null
 sleep 1
-pkill -f "\./api$" 2>/dev/null
+# pidfile 優先、fallback は同 dir 起動の api のみ (lsof cwd 照合)
+[ -f api.pid ] && kill "$(cat api.pid)" 2>/dev/null && rm -f api.pid
+HERE="$(pwd -P)"
+for p in $(pgrep -fx "./api" 2>/dev/null; pgrep -fx "$HERE/api" 2>/dev/null); do
+    [ "$(lsof -a -p "$p" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p')" = "$HERE" ] && kill "$p" 2>/dev/null
+done
 echo "Stopped"
 EOF
 chmod +x "$INSTALL_DIR/stop.sh"
