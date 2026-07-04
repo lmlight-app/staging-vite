@@ -1,11 +1,6 @@
 #!/bin/bash
 # AI Server Database Setup for macOS/Linux
-#
-# superuser/owner でしかできない部分だけを担当する:
-#   role / database / pgvector 拡張 / schema 作成。
-# テーブル・index・ENUM・初期 admin user・既存環境からの ALTER は、backend 起動時の
-# migrations.py が database.py のモデルから Base.metadata.create_all() で冪等に生成する
-# (= ここで DDL を二重管理しない。それがスキーマのドリフト原因になるため)。
+# superuser/owner でしかできない部分だけ担当 (role/database/pgvector拡張/schema)。table以降はmigrations.pyが冪等生成
 set -e
 
 DB_USER="${DB_USER:-digitalbase}"
@@ -42,9 +37,7 @@ if ! pg_isready -q 2>/dev/null; then
     exit 1
 fi
 
-# macOS の Homebrew / Postgres.app は "postgres" ロールを作らず、スーパーユーザー =
-# ログイン OS ユーザーであることが多い (psql -U postgres は role does not exist で失敗)。
-# → postgres ロールがあればそれを、無ければ OS ユーザー (= 既定 superuser) で接続する。
+# macOS の Homebrew/Postgres.app は postgres ロール未作成が多い (OSユーザー=superuser)。あれば使う
 PG_SUPER=""
 if [[ "$OSTYPE" == "darwin"* ]]; then
     if psql -U postgres -d postgres -tAc "SELECT 1" >/dev/null 2>&1; then
@@ -52,8 +45,7 @@ if [[ "$OSTYPE" == "darwin"* ]]; then
     fi
 fi
 
-# Run psql as the postgres superuser. Covers: macOS (postgres ロール or OS ユーザー),
-# Linux non-root+sudo (sudo -u postgres), root-without-sudo container (su).
+# postgres superuser として psql 実行 (macOS/Linux sudo/rootless container を吸収)
 pg_admin() {
     if [[ "$OSTYPE" == "darwin"* ]]; then
         psql ${PG_SUPER:+-U "$PG_SUPER"} "$@"
@@ -66,8 +58,7 @@ pg_admin() {
     fi
 }
 
-# Create user and database (冪等 — 既存ならスキップ、失敗は警告)。
-# -d postgres でメンテナンス DB に接続 (OS ユーザー名の DB は無いことが多いため明示)。
+# user/database 作成 (冪等、-d postgres でメンテナンスDBに接続)
 echo "Creating user and database..."
 if [ -z "$(pg_admin -d postgres -tAc "SELECT 1 FROM pg_roles WHERE rolname='$DB_USER'" 2>/dev/null)" ]; then
     pg_admin -d postgres -c "CREATE USER $DB_USER WITH PASSWORD '$DB_PASS';" || echo "⚠️  CREATE USER $DB_USER に失敗" >&2
@@ -86,11 +77,7 @@ if ! pg_admin -d "$DB_NAME" -c "CREATE EXTENSION IF NOT EXISTS vector;" >/dev/nu
     fi
 fi
 
-# ── Schemas only ──────────────────────────────────────────────────────────────
-# テーブル / index / ENUM / 初期 admin user / 既存環境からの ALTER は、backend 起動時の
-# migrations.py が database.py のモデルから Base.metadata.create_all() で冪等生成する。
-# ここでは二重管理（=ドリフトの元）を避け、superuser/owner が事前に用意すべき schema だけ作る。
-# schema 一覧は migrations.py と一致させること（public は default で常に存在）。
+# schema のみ作成 (table/index は migrations.py が冪等生成、一覧は migrations.py と一致させる)
 echo "Creating schemas..."
 for sch in approval datalake helpdesk log pgvector vision; do
     pg_admin -d "$DB_NAME" -c "CREATE SCHEMA IF NOT EXISTS $sch AUTHORIZATION \"$DB_USER\";" >/dev/null 2>&1 \
