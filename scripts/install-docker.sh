@@ -62,36 +62,20 @@ if [ ! -f "$INSTALL_DIR/.env" ]; then
     JWT_SECRET=$(openssl rand -hex 32 2>/dev/null || date +%s%N | sha256sum | cut -c1-64)
     OAUTH_ENCRYPTION_KEY=$(openssl rand -hex 32 2>/dev/null || date +%s%N | sha256sum | cut -c1-64)
     cat > "$INSTALL_DIR/.env" << EOF
-# AI Server Configuration ($EDITION edition / Docker)
-
-# Backend selection
 LLM_BACKEND=$EDITION
-
-# PostgreSQL (= 同一 docker network 内の digitalbase-postgres container)
 DATABASE_URL=postgresql://${DB_USER}:${DB_PASS}@$PG_CONTAINER:5432/${DB_NAME}
-
-# Ollama / vLLM endpoint (= container 内から host へは host.docker.internal)
 OLLAMA_BASE_URL=http://host.docker.internal:11434
 OLLAMA_AUTO_START=false
 VLLM_BASE_URL=http://host.docker.internal:8080
 VLLM_EMBED_BASE_URL=http://host.docker.internal:8081
 VLLM_AUTO_START=false
-
-# License / Files
 LICENSE_FILE_PATH=/app/data/license.lic
 FILES_DIR=/app/data/files
-
-# Server
 API_HOST=0.0.0.0
 API_PORT=8000
 JWT_SECRET=$JWT_SECRET
 OAUTH_ENCRYPTION_KEY=$OAUTH_ENCRYPTION_KEY
 AUTH_MODE=local
-
-# Cloud LLM (= API key 設定で有効化)
-# OPENAI_API_KEY=
-# ANTHROPIC_API_KEY=
-# GEMINI_API_KEY=
 EOF
     echo "✅ .env 生成完了: $INSTALL_DIR/.env"
 else

@@ -112,110 +112,23 @@ DB_PASS="${DB_PASS:-digitalbase}"
 DB_NAME="${DB_NAME:-digitalbase}"
 
 [ ! -f "$INSTALL_DIR/.env" ] && cat > "$INSTALL_DIR/.env" << EOF
-# =============================================================================
-# AI Server Configuration (vLLM Edition)
-# =============================================================================
-
-# Backend selection (= unified codebase で env で切替)
 LLM_BACKEND=vllm
-
-# Python path for vLLM (auto-configured by installer)
 VLLM_PYTHON=$INSTALL_DIR/venv/bin/python
-
-# PostgreSQL Database
 DATABASE_URL=postgresql://${DB_USER}:${DB_PASS}@localhost:5432/${DB_NAME}
-
-# =============================================================================
-# vLLM Server URLs
-# =============================================================================
 VLLM_BASE_URL=http://localhost:8080
 VLLM_EMBED_BASE_URL=http://localhost:8081
-# Optional: Separate vision server (leave empty to use chat server for vision)
-# VLLM_VISION_BASE_URL=http://localhost:8082
-
-# =============================================================================
-# vLLM Auto-Start Configuration
-# When enabled, API will automatically start vLLM servers on startup.
-# First run requires network to download models from HuggingFace.
-# Models are cached at ~/.cache/huggingface/hub/
-# =============================================================================
 VLLM_AUTO_START=true
-
-# Models (HuggingFace model IDs)
-# 軽量 default = Qwen3-4B (= 4B params, 32K context, 24GB GPU で余裕、PoC 用)
-# 上位:   Qwen/Qwen3-8B (= ~16GB), Qwen/Qwen3.5-35B-A3B (= 大型 MoE、>24GB)
-# 最軽量: Qwen/Qwen3-1.7B (= ~4GB、low-end GPU 可)
 VLLM_CHAT_MODEL=Qwen/Qwen3-4B
 VLLM_EMBED_MODEL=Qwen/Qwen3-Embedding-0.6B
-# Optional: Separate vision model (requires VLLM_VISION_BASE_URL)
-# VLLM_VISION_MODEL=Qwen/Qwen2.5-VL-7B-Instruct
-
-# GPU Configuration
-# VLLM_TENSOR_PARALLEL: Number of GPUs for tensor parallelism (default: 1)
-# VLLM_GPU_MEMORY_UTILIZATION_{CHAT,EMBED,VISION}: Per-server GPU memory ratio
-#   Unset = vLLM default (0.9), set when running multiple servers on same GPU
-#   2-server (chat + embed):  0.70 + 0.10 = 0.80
-#   3-server (+ vision):      0.35 + 0.10 + 0.25 = 0.70
-# VLLM_MAX_MODEL_LEN: Max context length (empty = model default)
 VLLM_TENSOR_PARALLEL=1
 VLLM_GPU_MEMORY_UTILIZATION_CHAT=0.70
 VLLM_GPU_MEMORY_UTILIZATION_EMBED=0.10
-# VLLM_GPU_MEMORY_UTILIZATION_VISION=0.25
-# VLLM_MAX_MODEL_LEN=4096
-
-# Additional vLLM arguments (space-separated, passed directly to vllm serve)
-# Examples: --enforce-eager, --enable-prefix-caching, --quantization awq, --dtype half
-#VLLM_REASONING_PARSER=qwen3 
-# VLLM_EXTRA_ARGS_CHAT=--enforce-eager --enable-prefix-caching
-# VLLM_EXTRA_ARGS_EMBED=--enforce-eager
-# VLLM_EXTRA_ARGS_VISION=--enforce-eager
-
-# =============================================================================
-# Whisper Transcription (GPU auto-detect)
-# Models are downloaded automatically on first use to ~/.cache/whisper/
-# Available: tiny, base, small, medium, large
-# =============================================================================
 WHISPER_MODEL=base
-
-# =============================================================================
-# API Server Configuration
-# =============================================================================
 API_HOST=0.0.0.0
 API_PORT=8000
-
-# =============================================================================
-# Authentication
-# =============================================================================
 JWT_SECRET=$(openssl rand -hex 32)
 AUTH_MODE=local
-
-# LDAP (AUTH_MODE=ldap)
-# LDAP_HOST=your-ad-server.company.local
-# LDAP_PORT=389
-# LDAP_USE_SSL=false
-# LDAP_BASE_DN=dc=company,dc=local
-# LDAP_USER_DN_FORMAT={username}@company.local
-# LDAP_BIND_DN=
-# LDAP_BIND_PASSWORD=
-
-# OIDC / Azure AD (AUTH_MODE=oidc)
-# OIDC_CLIENT_ID=
-# OIDC_CLIENT_SECRET=
-# OIDC_TENANT_ID=
-
-# =============================================================================
-# Offline Mode
-# After models are downloaded, uncomment to run without internet.
-# Not needed if using local model paths (e.g. /path/to/model).
-# =============================================================================
-# HF_HUB_OFFLINE=1
-
-# =============================================================================
-# License Configuration
-# =============================================================================
 LICENSE_FILE_PATH=$INSTALL_DIR/license.lic
-
-# File Storage (pipeline uploads/outputs)
 FILES_DIR=$INSTALL_DIR/files
 EOF
 
