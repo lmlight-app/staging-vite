@@ -113,11 +113,23 @@ HERE="$(pwd -P)"
 for p in $(pgrep -fx "./api" 2>/dev/null; pgrep -fx "$HERE/api" 2>/dev/null); do
     [ "$(lsof -a -p "$p" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p')" = "$HERE" ] && kill "$p" 2>/dev/null
 done
-sleep 1
+# 旧プロセスの完全終了を待つ (graceful shutdown 中に起動すると bind 失敗で新プロセスが死ぬ)
+for _ in $(seq 1 30); do
+    ALIVE=0
+    for p in $(pgrep -fx "./api" 2>/dev/null; pgrep -fx "$HERE/api" 2>/dev/null); do
+        [ "$(lsof -a -p "$p" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p')" = "$HERE" ] && ALIVE=1
+    done
+    [ "$ALIVE" -eq 0 ] && break
+    sleep 1
+done
 
 echo "🚀 Starting AI Server..."
 
 # Single process: API + Web frontend
+# PyInstaller 親プロセス由来の変数を除去 (= 再起動で spawn された新プロセスが
+# 旧プロセスの一時展開 dir を再利用して即死するのを防ぐ)
+unset _MEIPASS2 _PYI_ARCHIVE_FILE _PYI_PARENT_PROCESS_LEVEL _PYI_APPLICATION_HOME_DIR
+
 ./api &
 API_PID=$!
 echo "$API_PID" > api.pid
