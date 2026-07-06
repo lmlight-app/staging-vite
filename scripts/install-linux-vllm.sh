@@ -2,6 +2,14 @@
 # AI Server Installer for Linux (vLLM Edition)
 set -e
 
+# HOME 未設定/不正だと $HOME/.local/... が /.local/... に化ける (更新ボタン経由 =
+# systemd 環境で HOME 無しが起きる)。実 uid の home を確実に解決してから使う。
+if [ -z "$HOME" ] || [ "$HOME" = "/" ]; then
+    HOME="$(getent passwd "$(id -u)" 2>/dev/null | cut -d: -f6)"
+    [ -n "$HOME" ] || HOME="/root"
+    export HOME
+fi
+
 BASE_URL="${DB_BASE_URL:-https://github.com/lmlight-app/dist_vite/releases/latest/download}"
 INSTALL_DIR="${DB_INSTALL_DIR:-$HOME/.local/db}"
 ARCH="$(uname -m)"
