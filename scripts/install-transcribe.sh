@@ -52,7 +52,7 @@ for arg in "$@"; do
         --gpu) GPU_MODE=true ;;
         tiny|base|small|medium|large) MODEL_NAME="$arg" ;;
         *)
-            echo "❌ 無効な引数: $arg"
+            echo "[ERROR] 無効な引数: $arg"
             echo ""
             show_usage
             exit 1
@@ -79,7 +79,7 @@ echo ""
 
 # Check if already installed
 if [ -f "$MODEL_FILE" ]; then
-    echo "✅ モデルは既にインストールされています: $MODEL_FILE"
+    echo "[OK] モデルは既にインストールされています: $MODEL_FILE"
     echo ""
     echo "再インストールする場合は、まず以下を削除してください:"
     echo "  rm -rf $MODEL_DIR"
@@ -88,23 +88,23 @@ fi
 
 # Check install directory
 if [ ! -d "$INSTALL_DIR" ]; then
-    echo "❌ AI Serverがインストールされていません"
+    echo "[ERROR] AI Serverがインストールされていません"
     echo "   先にAI Serverをインストールしてください"
     exit 1
 fi
 
 # Remove old model files (different model)
 if [ -d "$MODEL_DIR" ]; then
-    echo "📁 既存のモデルを削除..."
+    echo "既存のモデルを削除..."
     rm -rf "$MODEL_DIR"
 fi
 
 # Create model directory
-echo "📁 モデルディレクトリを作成: $MODEL_DIR"
+echo "モデルディレクトリを作成: $MODEL_DIR"
 mkdir -p "$MODEL_DIR"
 
 # Download model
-echo "📥 Whisper ${MODEL_NAME}モデルをダウンロード中..."
+echo "Whisper ${MODEL_NAME}モデルをダウンロード中..."
 echo "   URL: $MODEL_URL"
 echo "   サイズ: 約${MODEL_SIZE}"
 echo ""
@@ -114,7 +114,7 @@ if command -v curl &> /dev/null; then
 elif command -v wget &> /dev/null; then
     wget --show-progress -O "$MODEL_FILE" "$MODEL_URL"
 else
-    echo "❌ curlまたはwgetが必要です"
+    echo "[ERROR] curlまたはwgetが必要です"
     exit 1
 fi
 
@@ -126,7 +126,7 @@ if [ -f "$ENV_FILE" ]; then
     else
         echo "WHISPER_MODEL=${MODEL_NAME}" >> "$ENV_FILE"
     fi
-    echo "📝 .envを更新: WHISPER_MODEL=${MODEL_NAME}"
+    echo ".envを更新: WHISPER_MODEL=${MODEL_NAME}"
 fi
 
 # GPU mode: install openai-whisper + torch
@@ -137,17 +137,17 @@ if [ "$GPU_MODE" = true ]; then
     if [ -f "${INSTALL_DIR}/pyproject.toml" ]; then
         # ソース配布: api が venv の torch/openai-whisper を使うので有効
         if ! command -v uv &> /dev/null; then
-            echo "📥 uv をインストール中..."
+            echo "uv をインストール中..."
             curl -LsSf https://astral.sh/uv/install.sh | sh
             export PATH="$HOME/.local/bin:$PATH"
         fi
         cd "$INSTALL_DIR"
-        echo "📦 GPU版 (openai-whisper + torch) をインストール中... (uv sync)"
+        echo "GPU版 (openai-whisper + torch) をインストール中... (uv sync)"
         uv sync --extra gpu --quiet
-        echo "✅ GPU版インストール完了"
+        echo "[OK] GPU版インストール完了"
     else
         # バイナリ配布: 同梱の pywhispercpp(CPU) で動作。torch は使われないのでスキップ。
-        echo "⚠️  この配布はバイナリ版 (CPU pywhispercpp 同梱) です。"
+        echo "[WARN] この配布はバイナリ版 (CPU pywhispercpp 同梱) です。"
         echo "   --gpu (openai-whisper + torch) はこの配布では使用されないためスキップします。"
         echo "   (GPU 文字起こしが必要な場合はソース版での実行が必要です)"
         GPU_MODE=false   # 最終表示を CPU 版に統一
@@ -158,7 +158,7 @@ fi
 if [ -f "$MODEL_FILE" ]; then
     SIZE=$(ls -lh "$MODEL_FILE" | awk '{print $5}')
     echo ""
-    echo "✅ インストール完了!"
+    echo "[OK] インストール完了!"
     echo "   モデル: ${MODEL_NAME}"
     echo "   ファイル: $MODEL_FILE"
     echo "   サイズ: $SIZE"
@@ -168,9 +168,9 @@ if [ -f "$MODEL_FILE" ]; then
         echo "   GPU: 無効 (CPU版 pywhispercpp)"
     fi
     echo ""
-    echo "⚠️  AI Server の再起動が必須です（再起動しないと旧モデルがキャッシュされ 503 になります）"
+    echo "[WARN] AI Server の再起動が必須です（再起動しないと旧モデルがキャッシュされ 503 になります）"
     echo "   再起動後、サイドバーに「文字起こし」が表示され、利用できます。"
 else
-    echo "❌ ダウンロードに失敗しました"
+    echo "[ERROR] ダウンロードに失敗しました"
     exit 1
 fi

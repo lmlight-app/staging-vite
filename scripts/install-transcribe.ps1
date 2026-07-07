@@ -60,7 +60,7 @@ Write-Host ""
 
 # Check if already installed
 if (Test-Path $ModelFile) {
-    Write-Host "✅ モデルは既にインストールされています: $ModelFile" -ForegroundColor Green
+    Write-Host "[OK] モデルは既にインストールされています: $ModelFile" -ForegroundColor Green
     Write-Host ""
     Write-Host "再インストールする場合は、まず以下を削除してください:"
     Write-Host "  Remove-Item -Recurse -Force `"$ModelDir`""
@@ -69,23 +69,23 @@ if (Test-Path $ModelFile) {
 
 # Check install directory
 if (-not (Test-Path $InstallDir)) {
-    Write-Host "❌ AI Serverがインストールされていません" -ForegroundColor Red
+    Write-Host "[ERROR] AI Serverがインストールされていません" -ForegroundColor Red
     Write-Host "   先にAI Serverをインストールしてください"
     exit 1
 }
 
 # Remove old model files (different model)
 if (Test-Path $ModelDir) {
-    Write-Host "📁 既存のモデルを削除..."
+    Write-Host "既存のモデルを削除..."
     Remove-Item -Recurse -Force $ModelDir
 }
 
 # Create model directory
-Write-Host "📁 モデルディレクトリを作成: $ModelDir"
+Write-Host "モデルディレクトリを作成: $ModelDir"
 New-Item -ItemType Directory -Force -Path $ModelDir | Out-Null
 
 # Download model
-Write-Host "📥 Whisper ${ModelName}モデルをダウンロード中..." -ForegroundColor Yellow
+Write-Host "Whisper ${ModelName}モデルをダウンロード中..." -ForegroundColor Yellow
 Write-Host "   URL: $ModelUrl"
 Write-Host "   サイズ: 約$ModelSize"
 Write-Host ""
@@ -95,7 +95,7 @@ try {
     Invoke-WebRequest -Uri $ModelUrl -OutFile $ModelFile -UseBasicParsing
     $ProgressPreference = 'Continue'
 } catch {
-    Write-Host "❌ ダウンロードに失敗しました: $_" -ForegroundColor Red
+    Write-Host "[ERROR] ダウンロードに失敗しました: $_" -ForegroundColor Red
     exit 1
 }
 
@@ -109,7 +109,7 @@ if (Test-Path $EnvFile) {
     }
     Set-Content -Path $EnvFile -Value $envContent.TrimEnd() -NoNewline
     Add-Content -Path $EnvFile -Value ""
-    Write-Host "📝 .envを更新: WHISPER_MODEL=$ModelName"
+    Write-Host ".envを更新: WHISPER_MODEL=$ModelName"
 }
 
 # Verify download
@@ -117,13 +117,13 @@ if (Test-Path $ModelFile) {
     $Size = (Get-Item $ModelFile).Length / 1MB
     $SizeStr = "{0:N1} MB" -f $Size
     Write-Host ""
-    Write-Host "✅ インストール完了!" -ForegroundColor Green
+    Write-Host "[OK] インストール完了!" -ForegroundColor Green
     Write-Host "   モデル: $ModelName"
     Write-Host "   ファイル: $ModelFile"
     Write-Host "   サイズ: $SizeStr"
     Write-Host ""
     Write-Host "AI Serverを再起動すると、サイドバーに「文字起こし」が表示されます" -ForegroundColor Cyan
 } else {
-    Write-Host "❌ ダウンロードに失敗しました" -ForegroundColor Red
+    Write-Host "[ERROR] ダウンロードに失敗しました" -ForegroundColor Red
     exit 1
 }

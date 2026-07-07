@@ -7,15 +7,15 @@ TOOLS_DIR="${HOME}/.local/db/tools"
 
 # 既に検出できるなら何もしない (検出順は DigitalBase 本体と同じ)
 if [ -n "$SOFFICE_PATH" ] && [ -x "$SOFFICE_PATH" ]; then
-    echo "✅ 既にインストール済み: $SOFFICE_PATH"
+    echo "[OK] 既にインストール済み: $SOFFICE_PATH"
     exit 0
 fi
 if command -v soffice >/dev/null 2>&1; then
-    echo "✅ 既にインストール済み: $(command -v soffice)"
+    echo "[OK] 既にインストール済み: $(command -v soffice)"
     exit 0
 fi
 if [ -x "${TOOLS_DIR}/soffice" ]; then
-    echo "✅ 既にインストール済み: ${TOOLS_DIR}/soffice"
+    echo "[OK] 既にインストール済み: ${TOOLS_DIR}/soffice"
     exit 0
 fi
 
@@ -42,5 +42,5 @@ else
     exit 1
 fi
 
-echo "✅ インストール完了: $(command -v soffice)"
-echo "   管理画面 > モデル管理 の「Office画像化」で検出状態を確認できます (DigitalBase の再起動は不要)"
+echo "[OK] インストール完了: $(command -v soffice)"
+echo "   管理画面 > 登録管理 の「Office画像化」で検出状態を確認できます (DigitalBase の再起動は不要)"

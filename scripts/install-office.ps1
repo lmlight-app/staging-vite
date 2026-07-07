@@ -26,12 +26,12 @@ Write-Host ""
 
 $existing = Find-Soffice
 if ($existing) {
-    Write-Host "✅ 既にインストール済み: $existing" -ForegroundColor Green
+    Write-Host "[OK] 既にインストール済み: $existing" -ForegroundColor Green
     exit 0
 }
 
 if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
-    Write-Host "❌ wingetが見つかりません。公式インストーラで導入してください:" -ForegroundColor Red
+    Write-Host "[ERROR] wingetが見つかりません。公式インストーラで導入してください:" -ForegroundColor Red
     Write-Host "   https://ja.libreoffice.org/download/libreoffice-still/"
     exit 1
 }
@@ -42,10 +42,10 @@ winget install -e --id TheDocumentFoundation.LibreOffice --silent --accept-packa
 $installed = Find-Soffice
 if ($installed) {
     Write-Host ""
-    Write-Host "✅ インストール完了: $installed" -ForegroundColor Green
+    Write-Host "[OK] インストール完了: $installed" -ForegroundColor Green
     Write-Host "   管理画面 > 登録管理 の「Office画像化」で検出状態を確認できます (DigitalBaseの再起動は不要)" -ForegroundColor Cyan
 } else {
-    Write-Host "❌ インストールを確認できませんでした。PC再起動後に再度お試しいただくか、手動確認してください:" -ForegroundColor Red
+    Write-Host "[ERROR] インストールを確認できませんでした。PC再起動後に再度お試しいただくか、手動確認してください:" -ForegroundColor Red
     Write-Host "   winget list --id TheDocumentFoundation.LibreOffice"
     exit 1
 }

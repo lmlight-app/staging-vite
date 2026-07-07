@@ -32,7 +32,7 @@ if [ -d "$INSTALL_DIR" ]; then
     _RP="$(cd "$INSTALL_DIR" && pwd -P)"
     for p in $(pgrep -fx "./api" 2>/dev/null; pgrep -fx "$_RP/api" 2>/dev/null); do
         if [ "$(readlink /proc/$p/cwd 2>/dev/null)" = "$_RP" ]; then
-            echo "❌ 稼働中のプロセスを停止できませんでした。先に停止してから再実行してください:"
+            echo "[ERROR] 稼働中のプロセスを停止できませんでした。先に停止してから再実行してください:"
             echo "   sudo systemctl stop db   (または $INSTALL_DIR/stop.sh)"
             exit 1
         fi
@@ -49,7 +49,7 @@ chmod +x "$INSTALL_DIR/api"
 if ! command -v uv &>/dev/null; then
     echo "Installing uv (= optional features の前提)..."
     curl -LsSf https://astral.sh/uv/install.sh | sh >/dev/null 2>&1 \
-        || echo "⚠️  uv install 失敗。後で: curl -LsSf https://astral.sh/uv/install.sh | sh"
+        || echo "[WARN] uv install 失敗。後で: curl -LsSf https://astral.sh/uv/install.sh | sh"
 fi
 
 # DB 接続情報は env で上書き可 (DB_USER/DB_PASS/DB_NAME)、既定 digitalbase。
@@ -97,7 +97,7 @@ elif command -v sudo &>/dev/null; then
     SUDO="sudo"
 else
     SUDO=""
-    echo "⚠️  root でも sudo でもありません。特権操作 (postgres / symlink) が失敗する可能性があります。"
+    echo "[WARN] root でも sudo でもありません。特権操作 (postgres / symlink) が失敗する可能性があります。"
 fi
 pg_admin() {
     if [ -n "$SUDO" ]; then
@@ -110,7 +110,7 @@ pg_admin() {
 }
 
 if ! command -v psql &>/dev/null; then
-    echo "❌ PostgreSQL がインストールされていません (pgvector 対応版・16 以降)。README 参照:"
+    echo "[ERROR] PostgreSQL がインストールされていません (pgvector 対応版・16 以降)。README 参照:"
     echo "   apt install -y postgresql postgresql-\$(ls /usr/lib/postgresql 2>/dev/null | sort -V | tail -1)-pgvector"
     exit 1
 fi
@@ -124,7 +124,7 @@ if ! pg_isready -q 2>/dev/null; then
     fi
 fi
 if ! pg_isready -q 2>/dev/null; then
-    echo "❌ PostgreSQL に接続できません (localhost:5432)。手動起動してください:"
+    echo "[ERROR] PostgreSQL に接続できません (localhost:5432)。手動起動してください:"
     echo "   pg_ctlcluster <ver> main start   # systemd 無しコンテナ"
     echo "   systemctl start postgresql       # systemd 環境"
     exit 1
@@ -132,18 +132,18 @@ fi
 
 # role (冪等)
 if [ -z "$(pg_admin -tAc "SELECT 1 FROM pg_roles WHERE rolname='$DB_USER'" 2>/dev/null)" ]; then
-    pg_admin -c "CREATE USER $DB_USER WITH PASSWORD '$DB_PASS';" || echo "⚠️  CREATE USER $DB_USER に失敗"
+    pg_admin -c "CREATE USER $DB_USER WITH PASSWORD '$DB_PASS';" || echo "[WARN] CREATE USER $DB_USER に失敗"
 fi
 # database (冪等)
 if [ -z "$(pg_admin -tAc "SELECT 1 FROM pg_database WHERE datname='$DB_NAME'" 2>/dev/null)" ]; then
-    pg_admin -c "CREATE DATABASE $DB_NAME OWNER $DB_USER;" || echo "⚠️  CREATE DATABASE $DB_NAME に失敗"
+    pg_admin -c "CREATE DATABASE $DB_NAME OWNER $DB_USER;" || echo "[WARN] CREATE DATABASE $DB_NAME に失敗"
 fi
 pg_admin -c "ALTER USER $DB_USER CREATEDB;" >/dev/null 2>&1 || true
 if ! pg_admin -d "$DB_NAME" -c "CREATE EXTENSION IF NOT EXISTS vector;" >/dev/null 2>&1; then
-    echo "⚠️  pgvector 拡張の有効化に失敗しました。RAG 機能を使う場合は:"
+    echo "[WARN] pgvector 拡張の有効化に失敗しました。RAG 機能を使う場合は:"
     echo "   apt install -y postgresql-\$(psql -V | grep -oE '[0-9]+' | head -1)-pgvector"
 fi
-echo "✅ DB bootstrap 完了 (= schemas / tables は backend 起動時に自動作成)"
+echo "[OK] DB bootstrap 完了 (= schemas / tables は backend 起動時に自動作成)"
 
 # 正準起動 (= systemd ExecStart と start.sh の共用。env 読込 + 前処理 + exec api)
 cat > "$INSTALL_DIR/run.sh" << 'EOF'
@@ -174,7 +174,7 @@ if systemctl is-active --quiet db 2>/dev/null; then
 fi
 
 # Check dependencies
-pg_isready -q 2>/dev/null || { echo "❌ PostgreSQL not running"; exit 1; }
+pg_isready -q 2>/dev/null || { echo "[ERROR] PostgreSQL not running"; exit 1; }
 
 # Stop existing (= pidfile 優先、fallback は同 dir 起動の api のみ = 他 install を巻き添えにしない)
 [ -f api.pid ] && kill "$(cat api.pid)" 2>/dev/null
@@ -192,22 +192,22 @@ for _ in $(seq 1 30); do
     sleep 1
 done
 
-echo "🚀 Starting AI Server..."
+echo "Starting AI Server..."
 
 # Single process: API + Web frontend (run.sh は exec するので PID = api 本体)
 ./run.sh &
 API_PID=$!
 echo "$API_PID" > api.pid
 
-echo "✅ Started - http://localhost:${API_PORT:-8000}"
+echo "[OK] Started - http://localhost:${API_PORT:-8000}"
 
 # Show LAN IP
 LAN_IP=$(ip -4 addr show 2>/dev/null | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | grep -v '127.0.0.1' | head -n1)
-[ -n "$LAN_IP" ] && echo "🌐 LAN: http://$LAN_IP:${API_PORT:-8000}"
+[ -n "$LAN_IP" ] && echo "LAN: http://$LAN_IP:${API_PORT:-8000}"
 
 # Show mDNS hostname if Avahi is running
 if systemctl is-active --quiet avahi-daemon 2>/dev/null; then
-    echo "🌐 mDNS: http://$(hostname).local:${API_PORT:-8000}"
+    echo "mDNS: http://$(hostname).local:${API_PORT:-8000}"
 fi
 
 echo ""
@@ -270,10 +270,10 @@ UNIT
         $SUDO systemctl enable db >/dev/null 2>&1 || true
         $SUDO systemctl disable digitalbase >/dev/null 2>&1 || true  # 旧unitのboot起動を止める(二重bind防止)
         SYSTEMD_OK=1
-        echo "✅ systemd unit 登録 (db.service = ブート自動起動 + クラッシュ自動復帰)"
+        echo "[OK] systemd unit 登録 (db.service = ブート自動起動 + クラッシュ自動復帰)"
     else
         rm -f "$UNIT_TMP"
-        echo "⚠️  systemd unit の登録に失敗しました (従来の start.sh 起動で動作します)"
+        echo "[WARN] systemd unit の登録に失敗しました (従来の start.sh 起動で動作します)"
     fi
 fi
 
@@ -304,14 +304,14 @@ chmod +x "$INSTALL_DIR/db"
 
 # Create symlink to /usr/local/bin (root: direct, non-root: sudo)
 if [ -z "$SUDO" ] && [ "$(id -u)" -ne 0 ]; then
-    echo "⚠️  Run: sudo ln -sf $INSTALL_DIR/db /usr/local/bin/db"
+    echo "[WARN] Run: sudo ln -sf $INSTALL_DIR/db /usr/local/bin/db"
 else
-    $SUDO ln -sf "$INSTALL_DIR/db" /usr/local/bin/db 2>/dev/null || echo "⚠️  Run: ln -sf $INSTALL_DIR/db /usr/local/bin/db"
+    $SUDO ln -sf "$INSTALL_DIR/db" /usr/local/bin/db 2>/dev/null || echo "[WARN] Run: ln -sf $INSTALL_DIR/db /usr/local/bin/db"
 fi
 
 echo ""
 if [ "$SYSTEMD_OK" -eq 1 ] && [ "${WAS_ACTIVE:-0}" -eq 1 ]; then
-    $SUDO systemctl start db 2>/dev/null && echo "✅ 更新完了、db.service を再開しました" || true
+    $SUDO systemctl start db 2>/dev/null && echo "[OK] 更新完了、db.service を再開しました" || true
 fi
 echo "Done. Edit $INSTALL_DIR/.env then run: db start"
 [ "$SYSTEMD_OK" -eq 1 ] && echo "     (systemd 管理: ブート時自動起動。ログは db logs / journalctl -u db)" || true

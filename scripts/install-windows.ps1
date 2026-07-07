@@ -35,13 +35,12 @@ if (Test-Path "$INSTALL_DIR\.env") {
     }
 }
 
-# 出力ヘルパー。Windows コンソール (PowerShell 5.1 / 既定 CP932) では emoji(✅/⚠️) が
-# □・? に化けるため、emoji は使わず ASCII タグ + 色で表す (日本語は CP932 で表示可)。
-# Linux/macOS 側は UTF-8 端末なので emoji を使う。OS で表現が違うのは意図的。
-function Write-Info { param($msg) Write-Host "[情報] $msg" -ForegroundColor Blue }
+# 出力ヘルパー。全 OS/スクリプトで ASCII タグ ([OK]/[WARN]/[ERROR]/[INFO]) + 色に統一
+# (CP932 コンソールで emoji が化けるため。日本語本文は CP932 で表示可)。
+function Write-Info { param($msg) Write-Host "[INFO] $msg" -ForegroundColor Blue }
 function Write-Success { param($msg) Write-Host "[OK] $msg" -ForegroundColor Green }
-function Write-Error { param($msg) Write-Host "[エラー] $msg" -ForegroundColor Red; exit 1 }
-function Write-Warn { param($msg) Write-Host "[警告] $msg" -ForegroundColor Yellow }
+function Write-Error { param($msg) Write-Host "[ERROR] $msg" -ForegroundColor Red; exit 1 }
+function Write-Warn { param($msg) Write-Host "[WARN] $msg" -ForegroundColor Yellow }
 
 Write-Host "Installing AI Server for Windows ($ARCH) to $INSTALL_DIR..."
 

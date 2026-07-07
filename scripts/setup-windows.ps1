@@ -13,13 +13,13 @@ $ErrorActionPreference = "Stop"
 # pgvector zip の取得元 (本線 binary とは別 release。dist では promote.sh が R2 vite-latest に書換)
 $PGVECTOR_URL = if ($env:PGVECTOR_BASE_URL) { $env:PGVECTOR_BASE_URL } else { "https://github.com/lmlight-app/dist_vite/releases/download/pgvector-latest" }
 
-# 出力ヘルパー。Windows コンソール (PowerShell 5.1 / 既定 CP932) では emoji(✅/⚠️) が
-# □・? に化けるため、emoji は使わず ASCII タグ + 色で表す (日本語は CP932 で表示可)。
+# 出力ヘルパー。全 OS/スクリプトで ASCII タグ ([OK]/[WARN]/[ERROR]/[INFO]) + 色に統一
+# (CP932 コンソールで emoji が化けるため。日本語本文は CP932 で表示可)。
 # install-windows.ps1 と表現を揃える。
-function Write-Info { param($msg) Write-Host "[情報] $msg" -ForegroundColor Blue }
+function Write-Info { param($msg) Write-Host "[INFO] $msg" -ForegroundColor Blue }
 function Write-Success { param($msg) Write-Host "[OK] $msg" -ForegroundColor Green }
-function Write-Error { param($msg) Write-Host "[エラー] $msg" -ForegroundColor Red; exit 1 }
-function Write-Warn { param($msg) Write-Host "[警告] $msg" -ForegroundColor Yellow }
+function Write-Error { param($msg) Write-Host "[ERROR] $msg" -ForegroundColor Red; exit 1 }
+function Write-Warn { param($msg) Write-Host "[WARN] $msg" -ForegroundColor Yellow }
 
 Write-Host "Setting up AI Server environment for Windows (PostgreSQL / pgvector / Ollama)..."
 

@@ -28,12 +28,12 @@ echo ""
 
 # ── 1. Preflight ────────────────────────────────────────────────────────
 command -v docker >/dev/null 2>&1 || {
-    echo "❌ Docker が install されていません"
+    echo "[ERROR] Docker が install されていません"
     echo "   https://docs.docker.com/get-docker/ から install してください"
     exit 1
 }
 docker info >/dev/null 2>&1 || {
-    echo "❌ Docker daemon が起動していません"
+    echo "[ERROR] Docker daemon が起動していません"
     echo "   Linux: sudo systemctl start docker"
     echo "   Mac/Win: Docker Desktop を起動してください"
     exit 1
@@ -41,15 +41,15 @@ docker info >/dev/null 2>&1 || {
 
 # Port 競合 check
 if lsof -i ":$APP_PORT" >/dev/null 2>&1 || ss -tln 2>/dev/null | grep -q ":$APP_PORT "; then
-    echo "⚠️  Port $APP_PORT 既に使用中です。別 port を指定するには APP_PORT=8001 で再実行してください"
+    echo "[WARN] Port $APP_PORT 既に使用中です。別 port を指定するには APP_PORT=8001 で再実行してください"
     read -p "  続行しますか? [y/N]: " yn
     [ "$yn" != "y" ] && exit 1
 fi
 
 # ── 2. Pull image ───────────────────────────────────────────────────────
-echo "📥 Image pull 中..."
+echo "Image pull 中..."
 docker pull "$IMAGE" || {
-    echo "❌ Image pull 失敗。確認事項:"
+    echo "[ERROR] Image pull 失敗。確認事項:"
     echo "   - Docker Hub にアクセスできるか (= proxy / 認証)"
     echo "   - image 名: $IMAGE"
     exit 1
@@ -77,9 +77,9 @@ JWT_SECRET=$JWT_SECRET
 OAUTH_ENCRYPTION_KEY=$OAUTH_ENCRYPTION_KEY
 AUTH_MODE=local
 EOF
-    echo "✅ .env 生成完了: $INSTALL_DIR/.env"
+    echo "[OK] .env 生成完了: $INSTALL_DIR/.env"
 else
-    echo "ℹ️  既存 .env を保持: $INSTALL_DIR/.env (= 上書きしません)"
+    echo "[INFO] 既存 .env を保持: $INSTALL_DIR/.env (= 上書きしません)"
 fi
 
 # ── 4. Docker network ──────────────────────────────────────────────────
@@ -88,7 +88,7 @@ docker network inspect "$NETWORK" >/dev/null 2>&1 || docker network create "$NET
 
 # ── 5. PostgreSQL container (= pgvector 同梱) ──────────────────────────
 if ! docker ps -a --format '{{.Names}}' | grep -q "^${PG_CONTAINER}$"; then
-    echo "📦 PostgreSQL (pgvector) container 起動..."
+    echo "PostgreSQL (pgvector) container 起動..."
     docker run -d --name "$PG_CONTAINER" --restart unless-stopped \
         --network "$NETWORK" \
         -e POSTGRES_USER="$DB_USER" \
@@ -105,16 +105,16 @@ if ! docker ps -a --format '{{.Names}}' | grep -q "^${PG_CONTAINER}$"; then
         sleep 1
     done
     docker exec "$PG_CONTAINER" psql -U "$DB_USER" -c "CREATE EXTENSION IF NOT EXISTS vector;" >/dev/null 2>&1 || true
-    echo "✅ PostgreSQL 準備完了"
+    echo "[OK] PostgreSQL 準備完了"
 else
     docker start "$PG_CONTAINER" >/dev/null 2>&1 || true
-    echo "ℹ️  既存 PostgreSQL container 利用: $PG_CONTAINER"
+    echo "[INFO] 既存 PostgreSQL container 利用: $PG_CONTAINER"
 fi
 
 # ── 6. License 配置案内 ────────────────────────────────────────────────
 if [ ! -f "$INSTALL_DIR/license.lic" ]; then
     echo ""
-    echo "📜 ライセンス配置オプション (= 起動後でも upload 可):"
+    echo "ライセンス配置オプション (= 起動後でも upload 可):"
     echo "   A. 事前配置:  cp <license.lic> $INSTALL_DIR/license.lic"
     echo "   B. 起動後 UI: http://localhost:$APP_PORT > admin > ライセンス"
     echo "   C. 起動後 API: POST /api/admin/license -F file=@license.lic"
@@ -123,7 +123,7 @@ fi
 
 # ── 7. アプリ container 起動 (= db-docker は廃止。操作は素の docker) ────
 echo ""
-echo "🚀 アプリ container 起動..."
+echo "アプリ container 起動..."
 # 既存 app container があれば作り直す (= data は volume に残るので安全)
 docker rm -f "$APP_CONTAINER" >/dev/null 2>&1 || true
 # --add-host: Linux で host.docker.internal を有効化 (= Mac/Win は default で有効)
@@ -137,7 +137,7 @@ docker run -d --name "$APP_CONTAINER" --restart unless-stopped \
 
 echo ""
 echo "============================================"
-echo "  ✅ Installation complete"
+echo "  [OK] Installation complete"
 echo "============================================"
 echo "  URL     : http://localhost:$APP_PORT"
 echo "  env     : $INSTALL_DIR/.env"

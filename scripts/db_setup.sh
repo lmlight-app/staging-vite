@@ -10,7 +10,7 @@ DB_NAME="${DB_NAME:-digitalbase}"
 echo "Setting up AI Server database..."
 
 if ! command -v psql &>/dev/null; then
-    echo "❌ PostgreSQL がインストールされていません。"
+    echo "[ERROR] PostgreSQL がインストールされていません。"
     echo ""
     echo "インストールしてから再度 install を実行してください (pgvector 対応・16 以降):"
     if [[ "$OSTYPE" == "darwin"* ]]; then
@@ -26,7 +26,7 @@ fi
 
 # Postgres 起動確認 (= ここで止めないと CREATE USER 等が Connection refused で連発する)
 if ! pg_isready -q 2>/dev/null; then
-    echo "❌ PostgreSQL に接続できません (localhost:5432)。"
+    echo "[ERROR] PostgreSQL に接続できません (localhost:5432)。"
     echo ""
     echo "起動してから再度 install を実行してください:"
     if [[ "$OSTYPE" == "darwin"* ]]; then
@@ -61,14 +61,14 @@ pg_admin() {
 # user/database 作成 (冪等、-d postgres でメンテナンスDBに接続)
 echo "Creating user and database..."
 if [ -z "$(pg_admin -d postgres -tAc "SELECT 1 FROM pg_roles WHERE rolname='$DB_USER'" 2>/dev/null)" ]; then
-    pg_admin -d postgres -c "CREATE USER $DB_USER WITH PASSWORD '$DB_PASS';" || echo "⚠️  CREATE USER $DB_USER に失敗" >&2
+    pg_admin -d postgres -c "CREATE USER $DB_USER WITH PASSWORD '$DB_PASS';" || echo "[WARN] CREATE USER $DB_USER に失敗" >&2
 fi
 if [ -z "$(pg_admin -d postgres -tAc "SELECT 1 FROM pg_database WHERE datname='$DB_NAME'" 2>/dev/null)" ]; then
-    pg_admin -d postgres -c "CREATE DATABASE $DB_NAME OWNER $DB_USER;" || echo "⚠️  CREATE DATABASE $DB_NAME に失敗" >&2
+    pg_admin -d postgres -c "CREATE DATABASE $DB_NAME OWNER $DB_USER;" || echo "[WARN] CREATE DATABASE $DB_NAME に失敗" >&2
 fi
 pg_admin -d postgres -c "ALTER USER $DB_USER CREATEDB;" >/dev/null 2>&1 || true
 if ! pg_admin -d "$DB_NAME" -c "CREATE EXTENSION IF NOT EXISTS vector;" >/dev/null 2>&1; then
-    echo "⚠️  pgvector 拡張の有効化に失敗しました。RAG 機能を利用する場合は pgvector を導入してください:" >&2
+    echo "[WARN] pgvector 拡張の有効化に失敗しました。RAG 機能を利用する場合は pgvector を導入してください:" >&2
     if [[ "$OSTYPE" == "darwin"* ]]; then
         echo "   brew install pgvector" >&2
     else
@@ -81,8 +81,8 @@ fi
 echo "Creating schemas..."
 for sch in approval datalake helpdesk log pgvector vision; do
     pg_admin -d "$DB_NAME" -c "CREATE SCHEMA IF NOT EXISTS $sch AUTHORIZATION \"$DB_USER\";" >/dev/null 2>&1 \
-        || echo "⚠️  CREATE SCHEMA $sch に失敗" >&2
+        || echo "[WARN] CREATE SCHEMA $sch に失敗" >&2
 done
 
-echo "✅ Database setup complete (= role / database / pgvector / schemas)"
+echo "[OK] Database setup complete (= role / database / pgvector / schemas)"
 echo "   ※ テーブル・index・初期 admin user (admin@local) はアプリ初回起動時に自動作成されます"
