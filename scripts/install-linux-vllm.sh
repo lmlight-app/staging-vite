@@ -95,20 +95,21 @@ else
 fi
 
 # Build/runtime deps: python3-dev (native ext builds), ffmpeg (Whisper),
-# tesseract-ocr (image/PDF OCR). Non-fatal — minimal containers may need manual
-# install (see README); we warn instead of aborting so the rest can proceed.
+# tesseract-ocr (image/PDF OCR), ninja-build (FlashInfer JIT compile — prebuilt
+# kernel の無い新 GPU アーキで vLLM 起動時に必須). Non-fatal — minimal containers
+# may need manual install (see README); we warn instead of aborting so the rest can proceed.
 DEPS_OK=1
 if command -v apt-get &>/dev/null; then
     $SUDO apt-get update -qq || DEPS_OK=0
-    $SUDO apt-get install -y -qq python3-dev ffmpeg tesseract-ocr || DEPS_OK=0
+    $SUDO apt-get install -y -qq python3-dev ffmpeg tesseract-ocr ninja-build || DEPS_OK=0
 elif command -v dnf &>/dev/null; then
-    $SUDO dnf install -y python3-devel ffmpeg tesseract || DEPS_OK=0
+    $SUDO dnf install -y python3-devel ffmpeg tesseract ninja-build || DEPS_OK=0
 elif command -v yum &>/dev/null; then
-    $SUDO yum install -y python3-devel ffmpeg tesseract || DEPS_OK=0
+    $SUDO yum install -y python3-devel ffmpeg tesseract ninja-build || DEPS_OK=0
 else
     DEPS_OK=0
 fi
-[ "$DEPS_OK" -eq 1 ] || echo "[WARN] 一部の system 依存 (python3-dev / ffmpeg / tesseract-ocr) を入れられませんでした。機能が失敗する場合は README を参照し手動導入してください。"
+[ "$DEPS_OK" -eq 1 ] || echo "[WARN] 一部の system 依存 (python3-dev / ffmpeg / tesseract-ocr / ninja-build) を入れられませんでした。機能が失敗する場合は README を参照し手動導入してください。"
 
 if [ ! -d "$INSTALL_DIR/venv" ]; then
     uv venv --python 3.12 "$INSTALL_DIR/venv"
