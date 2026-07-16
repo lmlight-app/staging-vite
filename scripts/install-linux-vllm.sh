@@ -44,9 +44,13 @@ pg_admin() {
 mkdir -p "$INSTALL_DIR"
 
 # 更新時: 稼働中の旧プロセスを止める (systemd unit → 従来 stop.sh の順。binary 上書きの text busy 防止)
-WAS_ACTIVE=0; { systemctl is-active --quiet db 2>/dev/null || systemctl is-active --quiet digitalbase 2>/dev/null; } && WAS_ACTIVE=1
-command -v systemctl &>/dev/null && $SUDO systemctl stop db digitalbase 2>/dev/null || true
-[ -f "$INSTALL_DIR/stop.sh" ] && "$INSTALL_DIR/stop.sh" 2>/dev/null || true
+# DB_NO_SERVICE=1 (= run.sh 経由の self-update、unit の内側で実行中) では unit を触らない (自壊防止)
+WAS_ACTIVE=0
+if [ -z "$DB_NO_SERVICE" ]; then
+    { systemctl is-active --quiet db 2>/dev/null || systemctl is-active --quiet digitalbase 2>/dev/null; } && WAS_ACTIVE=1
+    command -v systemctl &>/dev/null && $SUDO systemctl stop db digitalbase 2>/dev/null || true
+    [ -f "$INSTALL_DIR/stop.sh" ] && "$INSTALL_DIR/stop.sh" 2>/dev/null || true
+fi
 # 停止確認: 同 dir 起動の api が残っていれば中断 (稼働 binary への上書きは破損リスク)
 if [ -d "$INSTALL_DIR" ]; then
     _RP="$(cd "$INSTALL_DIR" && pwd -P)"
@@ -64,14 +68,16 @@ echo " Downloading AI Server backend..."
 
 BINARY_URL="$BASE_URL/lmlight-vite-linux-$ARCH"
 
+# 一時ファイルへ DL → 検証 → mv (= 失敗・中断時に稼働 binary を壊さない atomic 差替え)
 if command -v wget &>/dev/null; then
-  wget --show-progress --timeout=600 --tries=3 "$BINARY_URL" -O "$INSTALL_DIR/api"
+  wget --show-progress --timeout=600 --tries=3 "$BINARY_URL" -O "$INSTALL_DIR/api.new" || true
 else
   curl -fL --connect-timeout 30 --max-time 0 --retry 3 --retry-delay 5 \
-    "$BINARY_URL" -o "$INSTALL_DIR/api"
+    "$BINARY_URL" -o "$INSTALL_DIR/api.new" || true
 fi
 
-if [ ! -f "$INSTALL_DIR/api" ] || [ ! -s "$INSTALL_DIR/api" ]; then
+if [ ! -s "$INSTALL_DIR/api.new" ] || ! head -c 4 "$INSTALL_DIR/api.new" | grep -q $'\x7fELF'; then
+  rm -f "$INSTALL_DIR/api.new"
   echo "[ERROR] Failed to download vLLM backend"
   echo "   Please check:"
   echo "   1. Network connection"
@@ -79,7 +85,8 @@ if [ ! -f "$INSTALL_DIR/api" ] || [ ! -s "$INSTALL_DIR/api" ]; then
   exit 1
 fi
 
-chmod +x "$INSTALL_DIR/api"
+chmod +x "$INSTALL_DIR/api.new"
+mv -f "$INSTALL_DIR/api.new" "$INSTALL_DIR/api"
 
 # Python venv for vLLM + whisper (separate from PyInstaller binary)
 echo "Setting up Python environment for vLLM..."
@@ -134,23 +141,17 @@ DB_USER="${DB_USER:-digitalbase}"
 DB_PASS="${DB_PASS:-digitalbase}"
 DB_NAME="${DB_NAME:-digitalbase}"
 
+# config の既定値でカバーされる項目は書かない (= .env は既定と異なるものだけ。行が消えても
+# 既定値で復帰でき、設定の正が config.py に一本化される)。path 系は install dir 依存なので残す。
 [ ! -f "$INSTALL_DIR/.env" ] && cat > "$INSTALL_DIR/.env" << EOF
 LLM_BACKEND=vllm
-VLLM_PYTHON=$INSTALL_DIR/venv/bin/python
 DATABASE_URL=postgresql://${DB_USER}:${DB_PASS}@localhost:5432/${DB_NAME}
-VLLM_BASE_URL=http://localhost:8080
-VLLM_EMBED_BASE_URL=http://localhost:8081
+JWT_SECRET=$(openssl rand -hex 32)
 VLLM_AUTO_START=true
-VLLM_CHAT_MODEL=Qwen/Qwen3-4B
 VLLM_EMBED_MODEL=Qwen/Qwen3-Embedding-0.6B
-VLLM_TENSOR_PARALLEL=1
 VLLM_GPU_MEMORY_UTILIZATION_CHAT=0.70
 VLLM_GPU_MEMORY_UTILIZATION_EMBED=0.10
 WHISPER_MODEL=base
-API_HOST=0.0.0.0
-API_PORT=8000
-JWT_SECRET=$(openssl rand -hex 32)
-AUTH_MODE=local
 LICENSE_FILE_PATH=$INSTALL_DIR/license.lic
 FILES_DIR=$INSTALL_DIR/files
 EOF
@@ -212,6 +213,20 @@ cat > "$INSTALL_DIR/run.sh" << 'EOF'
 #!/bin/bash
 cd "$(dirname "$0")"
 set -a; [ -f .env ] && source .env; set +a
+
+# アップデート要求 marker (= 管理画面の更新ボタン。api が marker を置いて self-exit し、
+# systemd の Restart=always でここに再入する。unit 操作権限が不要な self-update)
+if [ -f .update-requested ]; then
+    UPDATE_URL=$(head -1 .update-requested)
+    rm -f .update-requested
+    echo "[UPDATE] running installer: $UPDATE_URL"
+    if curl -fsSL "$UPDATE_URL" -o .update-installer.sh; then
+        DB_NO_SERVICE=1 bash .update-installer.sh > update.log 2>&1 || echo "[UPDATE] installer failed (see update.log)"
+    else
+        echo "[UPDATE] installer download failed: $UPDATE_URL" | tee update.log
+    fi
+    rm -f .update-installer.sh
+fi
 
 # CUDA 13+: Triton bundled ptxas is CUDA 12, need system ptxas
 CUDA_MAJOR=$(nvidia-smi 2>/dev/null | grep -oP 'CUDA Version: \K\d+' || true)
@@ -316,7 +331,8 @@ chmod +x "$INSTALL_DIR/stop.sh"
 
 # ── systemd unit (サーバ標準: ブート自動起動 + クラッシュ自動復帰 + 確実な再起動) ──
 SYSTEMD_OK=0
-if [ -d /run/systemd/system ] && command -v systemctl &>/dev/null && { [ "$(id -u)" -eq 0 ] || [ -n "$SUDO" ]; }; then
+# DB_NO_SERVICE=1 (= self-update) では unit 再登録も skip (既存 unit のまま run.sh が exec ./api する)
+if [ -z "$DB_NO_SERVICE" ] && [ -d /run/systemd/system ] && command -v systemctl &>/dev/null && { [ "$(id -u)" -eq 0 ] || [ -n "$SUDO" ]; }; then
     UNIT_TMP=$(mktemp)
     cat > "$UNIT_TMP" << UNIT
 [Unit]

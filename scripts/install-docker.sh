@@ -61,21 +61,17 @@ mkdir -p "$INSTALL_DIR" "$INSTALL_DIR/files" "$INSTALL_DIR/postgres-data"
 if [ ! -f "$INSTALL_DIR/.env" ]; then
     JWT_SECRET=$(openssl rand -hex 32 2>/dev/null || date +%s%N | sha256sum | cut -c1-64)
     OAUTH_ENCRYPTION_KEY=$(openssl rand -hex 32 2>/dev/null || date +%s%N | sha256sum | cut -c1-64)
+    # config の既定値でカバーされる項目は書かない (= .env は既定と異なるものだけ。行が消えても
+    # 既定値で復帰でき、設定の正が config.py に一本化される)。FILES_DIR は bind mount 先なので残す。
     cat > "$INSTALL_DIR/.env" << EOF
 LLM_BACKEND=$EDITION
 DATABASE_URL=postgresql://${DB_USER}:${DB_PASS}@$PG_CONTAINER:5432/${DB_NAME}
-OLLAMA_BASE_URL=http://host.docker.internal:11434
-OLLAMA_AUTO_START=false
-VLLM_BASE_URL=http://host.docker.internal:8080
-VLLM_EMBED_BASE_URL=http://host.docker.internal:8081
-VLLM_AUTO_START=false
-LICENSE_FILE_PATH=/app/data/license.lic
-FILES_DIR=/app/data/files
-API_HOST=0.0.0.0
-API_PORT=8000
 JWT_SECRET=$JWT_SECRET
 OAUTH_ENCRYPTION_KEY=$OAUTH_ENCRYPTION_KEY
-AUTH_MODE=local
+OLLAMA_BASE_URL=http://host.docker.internal:11434
+VLLM_BASE_URL=http://host.docker.internal:8080
+VLLM_EMBED_BASE_URL=http://host.docker.internal:8081
+FILES_DIR=/app/data/files
 EOF
     echo "[OK] .env 生成完了: $INSTALL_DIR/.env"
 else

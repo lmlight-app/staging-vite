@@ -361,18 +361,16 @@ Write-Info "ステップ 5/5: 設定を作成中..."
 # .env ファイル作成 (存在しない場合のみ)
 if (-not (Test-Path "$INSTALL_DIR\.env")) {
     $JWT_SECRET = -join ((48..57) + (97..122) | Get-Random -Count 64 | ForEach-Object { [char]$_ })
+    # config の既定値でカバーされる項目は書かない (= .env は既定と異なるものだけ。行が消えても
+    # 既定値で復帰でき、設定の正が config.py に一本化される)。path 系は install dir 依存なので残す。
     $ENV_CONTENT = @"
 LLM_BACKEND=ollama
 DATABASE_URL=postgresql://${DB_USER}:${DB_PASSWORD}@127.0.0.1:${DB_PORT}/${DB_NAME}
-OLLAMA_BASE_URL=http://localhost:11434
+JWT_SECRET=$JWT_SECRET
 OLLAMA_CONTEXT_LENGTH=16384
 OLLAMA_AUTO_START=true
 LICENSE_FILE_PATH=$INSTALL_DIR\license.lic
 FILES_DIR=$INSTALL_DIR\files
-API_HOST=0.0.0.0
-API_PORT=8000
-JWT_SECRET=$JWT_SECRET
-AUTH_MODE=local
 "@
     Set-Content -Path "$INSTALL_DIR\.env" -Value $ENV_CONTENT -Encoding UTF8
     Write-Success ".env ファイルを作成しました"

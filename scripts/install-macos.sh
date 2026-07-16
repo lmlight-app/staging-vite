@@ -33,18 +33,16 @@ DB_USER="${DB_USER:-digitalbase}"
 DB_PASS="${DB_PASS:-digitalbase}"
 DB_NAME="${DB_NAME:-digitalbase}"
 
+# config の既定値でカバーされる項目は書かない (= .env は既定と異なるものだけ。行が消えても
+# 既定値で復帰でき、設定の正が config.py に一本化される)。path 系は install dir 依存なので残す。
 [ ! -f "$INSTALL_DIR/.env" ] && cat > "$INSTALL_DIR/.env" << EOF
 LLM_BACKEND=ollama
 DATABASE_URL=postgresql://${DB_USER}:${DB_PASS}@localhost:5432/${DB_NAME}
-OLLAMA_BASE_URL=http://localhost:11434
+JWT_SECRET=$(openssl rand -hex 32)
 OLLAMA_CONTEXT_LENGTH=16384
 OLLAMA_AUTO_START=true
 LICENSE_FILE_PATH=$INSTALL_DIR/license.lic
 FILES_DIR=$INSTALL_DIR/files
-API_HOST=0.0.0.0
-API_PORT=8000
-JWT_SECRET=$(openssl rand -hex 32)
-AUTH_MODE=local
 EOF
 
 # Database setup
