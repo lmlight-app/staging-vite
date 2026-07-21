@@ -29,6 +29,9 @@ else
     SUDO=""
     echo "[WARN] root でも sudo でもありません。特権操作 (apt / postgres / symlink) が失敗する可能性があります。"
 fi
+# 非対話実行 (TTY 無し = self-update 等) では sudo に password prompt させない (-n)。
+# 必要な特権操作は下の各所で「導入済みなら skip」してから呼ぶので、PAM ログも汚れない。
+[ -t 0 ] || { [ -n "$SUDO" ] && SUDO="sudo -n"; }
 
 # Run psql as the postgres superuser. Handles: non-root+sudo, root w/o sudo (su), fallback.
 pg_admin() {
@@ -105,8 +108,20 @@ fi
 # tesseract-ocr (image/PDF OCR), ninja-build (FlashInfer JIT compile — prebuilt
 # kernel の無い新 GPU アーキで vLLM 起動時に必須). Non-fatal — minimal containers
 # may need manual install (see README); we warn instead of aborting so the rest can proceed.
+# 全 deps 導入済みなら package manager を呼ばない (= 更新時は sudo 不要で静かに素通り)
+DEPS_PRESENT=1
+command -v ffmpeg >/dev/null 2>&1 || DEPS_PRESENT=0
+command -v tesseract >/dev/null 2>&1 || DEPS_PRESENT=0
+command -v ninja >/dev/null 2>&1 || DEPS_PRESENT=0
+if command -v dpkg >/dev/null 2>&1; then
+    dpkg -s python3-dev >/dev/null 2>&1 || DEPS_PRESENT=0
+elif command -v rpm >/dev/null 2>&1; then
+    rpm -q python3-devel >/dev/null 2>&1 || DEPS_PRESENT=0
+fi
 DEPS_OK=1
-if command -v apt-get &>/dev/null; then
+if [ "$DEPS_PRESENT" -eq 1 ]; then
+    :  # already installed — skip privileged install entirely
+elif command -v apt-get &>/dev/null; then
     $SUDO apt-get update -qq || DEPS_OK=0
     $SUDO apt-get install -y -qq python3-dev ffmpeg tesseract-ocr ninja-build || DEPS_OK=0
 elif command -v dnf &>/dev/null; then
@@ -193,20 +208,26 @@ if ! pg_isready -q 2>/dev/null; then
     exit 1
 fi
 
-# role (冪等)
-if [ -z "$(pg_admin -tAc "SELECT 1 FROM pg_roles WHERE rolname='$DB_USER'" 2>/dev/null)" ]; then
-    pg_admin -c "CREATE USER $DB_USER WITH PASSWORD '$DB_PASS';" || echo "[WARN] CREATE USER $DB_USER に失敗"
+# 既に app 資格情報で接続でき pgvector も有効なら bootstrap 全体を skip
+# (= 更新時は pg_admin/sudo を一切呼ばず PAM ログを汚さない)
+if [ "$(PGPASSWORD="$DB_PASS" psql -h localhost -U "$DB_USER" -d "$DB_NAME" -tAc "SELECT 1 FROM pg_extension WHERE extname='vector'" 2>/dev/null)" = "1" ]; then
+    echo "[OK] DB bootstrap skip (構成済み)"
+else
+    # role (冪等)
+    if [ -z "$(pg_admin -tAc "SELECT 1 FROM pg_roles WHERE rolname='$DB_USER'" 2>/dev/null)" ]; then
+        pg_admin -c "CREATE USER $DB_USER WITH PASSWORD '$DB_PASS';" || echo "[WARN] CREATE USER $DB_USER に失敗"
+    fi
+    # database (冪等)
+    if [ -z "$(pg_admin -tAc "SELECT 1 FROM pg_database WHERE datname='$DB_NAME'" 2>/dev/null)" ]; then
+        pg_admin -c "CREATE DATABASE $DB_NAME OWNER $DB_USER;" || echo "[WARN] CREATE DATABASE $DB_NAME に失敗"
+    fi
+    pg_admin -c "ALTER USER $DB_USER CREATEDB;" >/dev/null 2>&1 || true
+    if ! pg_admin -d "$DB_NAME" -c "CREATE EXTENSION IF NOT EXISTS vector;" >/dev/null 2>&1; then
+        echo "[WARN] pgvector 拡張の有効化に失敗しました。RAG 機能を使う場合は:"
+        echo "   apt install -y postgresql-\$(psql -V | grep -oE '[0-9]+' | head -1)-pgvector"
+    fi
+    echo "[OK] DB bootstrap 完了 (= schemas / tables は backend 起動時に自動作成)"
 fi
-# database (冪等)
-if [ -z "$(pg_admin -tAc "SELECT 1 FROM pg_database WHERE datname='$DB_NAME'" 2>/dev/null)" ]; then
-    pg_admin -c "CREATE DATABASE $DB_NAME OWNER $DB_USER;" || echo "[WARN] CREATE DATABASE $DB_NAME に失敗"
-fi
-pg_admin -c "ALTER USER $DB_USER CREATEDB;" >/dev/null 2>&1 || true
-if ! pg_admin -d "$DB_NAME" -c "CREATE EXTENSION IF NOT EXISTS vector;" >/dev/null 2>&1; then
-    echo "[WARN] pgvector 拡張の有効化に失敗しました。RAG 機能を使う場合は:"
-    echo "   apt install -y postgresql-\$(psql -V | grep -oE '[0-9]+' | head -1)-pgvector"
-fi
-echo "[OK] DB bootstrap 完了 (= schemas / tables は backend 起動時に自動作成)"
 
 # 正準起動 (= systemd ExecStart と start.sh の共用。env 読込 + 前処理 + exec api)
 cat > "$INSTALL_DIR/run.sh" << 'EOF'
@@ -393,8 +414,10 @@ esac
 EOF
 chmod +x "$INSTALL_DIR/db"
 
-# Create symlink to /usr/local/bin (root: direct, non-root: sudo)
-if [ -z "$SUDO" ] && [ "$(id -u)" -ne 0 ]; then
+# Create symlink to /usr/local/bin (root: direct, non-root: sudo)。既に正しければ skip (= sudo 不要)
+if [ "$(readlink /usr/local/bin/db 2>/dev/null)" = "$INSTALL_DIR/db" ]; then
+    :
+elif [ -z "$SUDO" ] && [ "$(id -u)" -ne 0 ]; then
     echo "[WARN] Run: sudo ln -sf $INSTALL_DIR/db /usr/local/bin/db"
 else
     $SUDO ln -sf "$INSTALL_DIR/db" /usr/local/bin/db 2>/dev/null || echo "[WARN] Run: ln -sf $INSTALL_DIR/db /usr/local/bin/db"
