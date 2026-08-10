@@ -92,7 +92,7 @@ if [ -f "$INSTALL_DIR/.env" ]; then
 fi
 # ── DB bootstrap (= superuser でしかできない 3 つだけ。schema / table / index /
 # column 追加 / 初期 admin user は backend 起動時の migrations.py が冪等に作成) ──
-echo "Setting up database (bootstrap only)..."
+echo "Setting up database..."
 DB_USER="${DB_USER:-digitalbase}"
 DB_PASS="${DB_PASS:-digitalbase}"
 DB_NAME="${DB_NAME:-digitalbase}"
@@ -145,7 +145,7 @@ fi
 # 既に app 資格情報で接続でき pgvector も有効なら bootstrap 全体を skip
 # (= 更新時は pg_admin/sudo を一切呼ばず PAM ログを汚さない)
 if [ "$(PGPASSWORD="$DB_PASS" psql -h localhost -U "$DB_USER" -d "$DB_NAME" -tAc "SELECT 1 FROM pg_extension WHERE extname='vector'" 2>/dev/null)" = "1" ]; then
-    echo "[OK] DB bootstrap skip (構成済み)"
+    echo "[OK] Database already configured; setup skipped"
 else
     # role (冪等)
     if [ -z "$(pg_admin -tAc "SELECT 1 FROM pg_roles WHERE rolname='$DB_USER'" 2>/dev/null)" ]; then
@@ -160,7 +160,7 @@ else
         echo "[WARN] pgvector 拡張の有効化に失敗しました。RAG 機能を使う場合は:"
         echo "   apt install -y postgresql-\$(psql -V | grep -oE '[0-9]+' | head -1)-pgvector"
     fi
-    echo "[OK] DB bootstrap 完了 (= schemas / tables は backend 起動時に自動作成)"
+    echo "[OK] Database setup complete (schemas and tables are created automatically on first startup)"
 fi
 
 # 正準起動 (= systemd ExecStart と start.sh の共用。env 読込 + 前処理 + exec api)

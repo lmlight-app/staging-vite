@@ -56,7 +56,7 @@ if [ -f "$INSTALL_DIR/.env" ]; then
 fi
 # ── DB bootstrap (= superuser でしかできない 3 つだけ。schema / table / index /
 # column 追加 / 初期 admin user は backend 起動時の migrations.py が冪等に作成) ──
-echo "Setting up database (bootstrap only)..."
+echo "Setting up database..."
 DB_USER="${DB_USER:-digitalbase}"
 DB_PASS="${DB_PASS:-digitalbase}"
 DB_NAME="${DB_NAME:-digitalbase}"
@@ -94,7 +94,7 @@ if ! pg_admin -d "$DB_NAME" -c "CREATE EXTENSION IF NOT EXISTS vector;" >/dev/nu
     echo "[WARN] pgvector 拡張の有効化に失敗しました。RAG 機能を使う場合は:"
     echo "   brew install pgvector   (Postgres.app は同梱のことが多い)"
 fi
-echo "[OK] DB bootstrap 完了 (= schemas / tables は backend 起動時に自動作成)"
+echo "[OK] Database setup complete (schemas and tables are created automatically on first startup)"
 
 cat > "$INSTALL_DIR/start.sh" << 'EOF'
 #!/bin/bash
