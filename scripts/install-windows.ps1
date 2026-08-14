@@ -318,8 +318,7 @@ END `$`$;
 
 
     # ── DDL は backend 起動時の migrations.py が冪等に作成する ──
-    # (= 旧 raw SQL ブロック ~540 行は撤去済み。schema / table / index /
-    #  column 追加 / 初期 admin user は全部 Python 側が担当)
+    # (= schema / table / index / column 追加 / 初期 admin user は全部 Python 側が担当)
     Write-Info "スキーマ / テーブル / 初期 admin user は backend 起動時に自動作成されます"
 } else {
     Write-Warn "PostgreSQL がインストールされていないため、データベースセットアップをスキップしました"

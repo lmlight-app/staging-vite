@@ -18,6 +18,32 @@ case "$ARCH" in x86_64|amd64) ARCH="amd64" ;; aarch64|arm64) ARCH="arm64" ;; esa
 
 echo "Installing AI Server Vite Edition ($ARCH) to $INSTALL_DIR"
 
+# ── Privilege helper: support root-without-sudo (minimal GPU containers) ──
+# 最小コンテナ (GMI 等の CUDA イメージ) は root 直 + sudo 未インストールが普通。
+# sudo を無条件前提にすると postgres bootstrap / symlink が黙って失敗するので分岐。
+if [ "$(id -u)" -eq 0 ]; then
+    SUDO=""
+elif command -v sudo &>/dev/null; then
+    SUDO="sudo"
+else
+    SUDO=""
+    echo "[WARN] root でも sudo でもありません。特権操作 (postgres / symlink) が失敗する可能性があります。"
+fi
+# 非対話実行 (TTY 無し = self-update 等) では sudo に password prompt させない (-n)。
+# 必要な特権操作は下の各所で「導入済みなら skip」してから呼ぶので、PAM ログも汚れない。
+[ -t 0 ] || { [ -n "$SUDO" ] && SUDO="sudo -n"; }
+
+# Run psql as the postgres superuser. Handles: non-root+sudo, root w/o sudo (su), fallback.
+pg_admin() {
+    if [ -n "$SUDO" ]; then
+        $SUDO -u postgres psql "$@"
+    elif [ "$(id -u)" -eq 0 ]; then
+        su postgres -c "psql $(printf '%q ' "$@")"
+    else
+        psql "$@"
+    fi
+}
+
 mkdir -p "$INSTALL_DIR"
 
 # 更新時: 稼働中の旧プロセスを止める (systemd unit → 従来 stop.sh の順。binary 上書きの text busy 防止)
@@ -25,10 +51,7 @@ mkdir -p "$INSTALL_DIR"
 WAS_ACTIVE=0
 if [ -z "$DB_NO_SERVICE" ]; then
     { systemctl is-active --quiet db 2>/dev/null || systemctl is-active --quiet digitalbase 2>/dev/null; } && WAS_ACTIVE=1
-    # ※ この時点では SUDO 未判定のため sudo -n (パスワード prompt で止めない)
-    if command -v systemctl &>/dev/null; then
-        systemctl stop db digitalbase 2>/dev/null || sudo -n systemctl stop db digitalbase 2>/dev/null || true
-    fi
+    command -v systemctl &>/dev/null && $SUDO systemctl stop db digitalbase 2>/dev/null || true
     [ -f "$INSTALL_DIR/stop.sh" ] && "$INSTALL_DIR/stop.sh" 2>/dev/null || true
 fi
 # 停止確認: 同 dir 起動の api が残っていれば中断 (稼働 binary への上書きは破損リスク)
@@ -46,7 +69,8 @@ fi
 # Download single binary (API + frontend embedded)
 # 一時ファイルへ DL → 検証 → mv (= 失敗・中断時に稼働 binary を壊さない atomic 差替え)
 echo "Downloading AI Server..."
-curl -fSL "$BASE_URL/lmlight-vite-linux-$ARCH" -o "$INSTALL_DIR/api.new" || true
+curl -fL --connect-timeout 30 --max-time 0 --retry 3 --retry-delay 5 \
+    "$BASE_URL/lmlight-vite-linux-$ARCH" -o "$INSTALL_DIR/api.new" || true
 if [ ! -s "$INSTALL_DIR/api.new" ] || ! head -c 4 "$INSTALL_DIR/api.new" | grep -q $'\x7fELF'; then
     rm -f "$INSTALL_DIR/api.new"
     echo "[ERROR] Failed to download backend: $BASE_URL/lmlight-vite-linux-$ARCH"
@@ -96,30 +120,6 @@ echo "Setting up database..."
 DB_USER="${DB_USER:-digitalbase}"
 DB_PASS="${DB_PASS:-digitalbase}"
 DB_NAME="${DB_NAME:-digitalbase}"
-
-# ── Privilege helper: support root-without-sudo (minimal GPU containers) ──
-# 最小コンテナ (GMI 等の CUDA イメージ) は root 直 + sudo 未インストールが普通。
-# sudo を無条件前提にすると postgres bootstrap / symlink が黙って失敗するので分岐。
-if [ "$(id -u)" -eq 0 ]; then
-    SUDO=""
-elif command -v sudo &>/dev/null; then
-    SUDO="sudo"
-else
-    SUDO=""
-    echo "[WARN] root でも sudo でもありません。特権操作 (postgres / symlink) が失敗する可能性があります。"
-fi
-# 非対話実行 (TTY 無し = self-update 等) では sudo に password prompt させない (-n)。
-# 必要な特権操作は下の各所で「導入済みなら skip」してから呼ぶので、PAM ログも汚れない。
-[ -t 0 ] || { [ -n "$SUDO" ] && SUDO="sudo -n"; }
-pg_admin() {
-    if [ -n "$SUDO" ]; then
-        $SUDO -u postgres psql "$@"
-    elif [ "$(id -u)" -eq 0 ]; then
-        su postgres -c "psql $(printf '%q ' "$@")"
-    else
-        psql "$@"
-    fi
-}
 
 if ! command -v psql &>/dev/null; then
     echo "[ERROR] PostgreSQL がインストールされていません (pgvector 対応版・16 以降)。README 参照:"

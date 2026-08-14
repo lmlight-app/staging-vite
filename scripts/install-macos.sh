@@ -15,9 +15,17 @@ mkdir -p "$INSTALL_DIR"
 [ -f "$INSTALL_DIR/stop.sh" ] && "$INSTALL_DIR/stop.sh" 2>/dev/null || true
 
 # Download single binary (API + frontend embedded)
+# 一時ファイルへ DL → 検証 → mv (= 失敗・中断時に稼働 binary を壊さない atomic 差替え)
 echo "Downloading AI Server..."
-curl -fSL "$BASE_URL/lmlight-vite-macos-$ARCH" -o "$INSTALL_DIR/api"
-chmod +x "$INSTALL_DIR/api"
+curl -fL --connect-timeout 30 --max-time 0 --retry 3 --retry-delay 5 \
+    "$BASE_URL/lmlight-vite-macos-$ARCH" -o "$INSTALL_DIR/api.new" || true
+if [ ! -s "$INSTALL_DIR/api.new" ] || ! file -b "$INSTALL_DIR/api.new" | grep -q "Mach-O"; then
+    rm -f "$INSTALL_DIR/api.new"
+    echo "[ERROR] Failed to download backend: $BASE_URL/lmlight-vite-macos-$ARCH"
+    exit 1
+fi
+chmod +x "$INSTALL_DIR/api.new"
+mv -f "$INSTALL_DIR/api.new" "$INSTALL_DIR/api"
 
 # uv 仕込み (= YOLO / transcribe / plugin install を将来即実行できるようにする)
 # venv は作らない (= 各 optional install script が lazy に作る、容量影響なし)

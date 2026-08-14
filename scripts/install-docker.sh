@@ -117,7 +117,7 @@ if [ ! -f "$INSTALL_DIR/license.lic" ]; then
     echo ""
 fi
 
-# ── 7. アプリ container 起動 (= db-docker は廃止。操作は素の docker) ────
+# ── 7. アプリ container 起動 (= 操作は素の docker コマンド) ────────────
 echo ""
 echo "アプリ container 起動..."
 # 既存 app container があれば作り直す (= data は volume に残るので安全)

@@ -72,22 +72,13 @@ echo " Downloading AI Server backend..."
 BINARY_URL="$BASE_URL/lmlight-vite-linux-$ARCH"
 
 # 一時ファイルへ DL → 検証 → mv (= 失敗・中断時に稼働 binary を壊さない atomic 差替え)
-if command -v wget &>/dev/null; then
-  wget --show-progress --timeout=600 --tries=3 "$BINARY_URL" -O "$INSTALL_DIR/api.new" || true
-else
-  curl -fL --connect-timeout 30 --max-time 0 --retry 3 --retry-delay 5 \
+curl -fL --connect-timeout 30 --max-time 0 --retry 3 --retry-delay 5 \
     "$BINARY_URL" -o "$INSTALL_DIR/api.new" || true
-fi
-
 if [ ! -s "$INSTALL_DIR/api.new" ] || ! head -c 4 "$INSTALL_DIR/api.new" | grep -q $'\x7fELF'; then
-  rm -f "$INSTALL_DIR/api.new"
-  echo "[ERROR] Failed to download vLLM backend"
-  echo "   Please check:"
-  echo "   1. Network connection"
-  echo "   2. File exists at: $BINARY_URL"
-  exit 1
+    rm -f "$INSTALL_DIR/api.new"
+    echo "[ERROR] Failed to download backend: $BINARY_URL"
+    exit 1
 fi
-
 chmod +x "$INSTALL_DIR/api.new"
 mv -f "$INSTALL_DIR/api.new" "$INSTALL_DIR/api"
 
