@@ -1,6 +1,7 @@
 #!/bin/bash
 # AI Server Installer for Linux (SGLang Edition)
-# vLLM 版との差分は「venv-sglang に sglang を入れる」「.env が LLM_BACKEND=sglang」だけ。
+# vLLM 版との差分は「共有 venv に (vllm でなく) sglang を入れる」「.env が LLM_BACKEND=sglang」だけ。
+# venv は edition 共有 (= ollama⇔vLLM と同じく、切替 = 対応する installer を実行し直す)。
 # 本体 binary / DB bootstrap / systemd unit / db CLI は共通 (= install-linux-vllm.sh と同一手順)。
 set -e
 
@@ -85,7 +86,8 @@ chmod +x "$INSTALL_DIR/api.new"
 mv -f "$INSTALL_DIR/api.new" "$INSTALL_DIR/api"
 
 # Python venv for SGLang + whisper (separate from PyInstaller binary)。
-# vLLM とは torch/flashinfer の版が衝突しうるので venv を分ける (= 併存させて切替できる)
+# venv は edition 共有: 旧 edition の残骸 (vllm 等) が入っていても resolver が
+# torch 等の共有依存を sglang の要求に揃える (残骸は未使用なので害なし)
 echo "Setting up Python environment for SGLang..."
 
 # Install uv (torch index の自動選択に使う)
@@ -127,18 +129,17 @@ else
 fi
 [ "$DEPS_OK" -eq 1 ] || echo "[WARN] 一部の system 依存 (python3-dev / ffmpeg / tesseract-ocr / ninja-build) を入れられませんでした。機能が失敗する場合は README を参照し手動導入してください。"
 
-SGLANG_VENV="$INSTALL_DIR/venv-sglang"
-if [ ! -d "$SGLANG_VENV" ]; then
-    uv venv --python 3.12 "$SGLANG_VENV"
+if [ ! -d "$INSTALL_DIR/venv" ]; then
+    uv venv --python 3.12 "$INSTALL_DIR/venv"
 fi
 
 # SGLang: 版は固定しない (= 常に最新 stable を PyPI から取得)。
 # --torch-backend=auto が CUDA ドライバ版を見て合う PyTorch index を自動選択する。
 # [all] は flashinfer 等の kernel 一式 (= tool calling / 高速 decode に必要) を含む。
 echo " Installing latest SGLang (torch-backend=auto)..."
-uv pip install --python "$SGLANG_VENV/bin/python" "sglang[all]" --torch-backend=auto
+uv pip install --python "$INSTALL_DIR/venv/bin/python" "sglang[all]" --torch-backend=auto
 
-uv pip install --python "$SGLANG_VENV/bin/python" "openai-whisper>=20231117"
+uv pip install --python "$INSTALL_DIR/venv/bin/python" "openai-whisper>=20231117"
 
 echo "[OK] Python venv ready"
 
@@ -157,7 +158,6 @@ DB_NAME="${DB_NAME:-digitalbase}"
 LLM_BACKEND=sglang
 DATABASE_URL=postgresql://${DB_USER}:${DB_PASS}@localhost:5432/${DB_NAME}
 JWT_SECRET=$(openssl rand -hex 32)
-SGLANG_PYTHON=$INSTALL_DIR/venv-sglang/bin/python
 SGLANG_AUTO_START=true
 SGLANG_EMBED_MODEL=Qwen/Qwen3-Embedding-0.6B
 SGLANG_MEM_FRACTION_CHAT=0.70
