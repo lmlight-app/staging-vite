@@ -133,9 +133,18 @@ else
 fi
 [ "$DEPS_OK" -eq 1 ] || echo "[WARN] 一部の system 依存 (python3-dev / ffmpeg / tesseract-ocr / ninja-build) を入れられませんでした。機能が失敗する場合は README を参照し手動導入してください。"
 
+# edition 切替の検出 = venv 無条件作り直し。import 検証だけでは不十分と実証済み
+# (2026-08-19: `import vllm` は通るのに遅延 import される torchaudio が旧 CUDA 版のまま残り
+# 実行時に落ちた)。venv 作成時に edition marker を書き、違う edition なら丸ごと作り直す
+if [ -d "$INSTALL_DIR/venv" ] && [ "$(cat "$INSTALL_DIR/venv/.db-edition" 2>/dev/null)" != "sglang" ] \
+   && [ -f "$INSTALL_DIR/venv/.db-edition" ]; then
+    echo " 別 edition の venv を検出しました。作り直します..."
+    rm -rf "$INSTALL_DIR/venv"
+fi
 if [ ! -d "$INSTALL_DIR/venv" ]; then
     uv venv --python "$PYTHON_VER" "$INSTALL_DIR/venv"
 fi
+echo "sglang" > "$INSTALL_DIR/venv/.db-edition"
 
 # SGLang: 版は固定しない (= 常に最新 stable を PyPI から取得)。
 # --torch-backend=auto が CUDA ドライバ版を見て合う PyTorch index を自動選択する。
@@ -168,6 +177,18 @@ DB_NAME="${DB_NAME:-digitalbase}"
 # 既定値で復帰でき、設定の正が config.py に一本化される)。path 系は install dir 依存なので残す。
 # chat / embed を 1 GPU に同居させる前提の配分。SGLang の mem-fraction は空きメモリ基準
 # のため vLLM の 0.10 相当では KV が確保できず起動不可 (2026-08-19 実機実測: 0.45 未満で拒否)
+# 既存 .env の backend が本 edition と違うままだと「venv だけ切替わって起動不可」になる
+# (2026-08-19 実機で発生: sglang の .env のまま vLLM installer 実行 → chat が上がらない)。
+# installer は .env を書き換えない方針なので、ここでは検出して明確に警告だけする
+if [ -f "$INSTALL_DIR/.env" ]; then
+    CURRENT_BACKEND=$(grep -E "^LLM_BACKEND=" "$INSTALL_DIR/.env" | tail -1 | cut -d= -f2)
+    if [ -n "$CURRENT_BACKEND" ] && [ "$CURRENT_BACKEND" != "sglang" ]; then
+        echo ""
+        echo "[WARN] .env は LLM_BACKEND=$CURRENT_BACKEND のままです。この edition を使うには:"
+        echo "       $INSTALL_DIR/.env の LLM_BACKEND を sglang に変更して db restart してください"
+        echo ""
+    fi
+fi
 [ ! -f "$INSTALL_DIR/.env" ] && cat > "$INSTALL_DIR/.env" << EOF
 LLM_BACKEND=sglang
 DATABASE_URL=postgresql://${DB_USER}:${DB_PASS}@localhost:5432/${DB_NAME}
