@@ -1,0 +1,431 @@
+#!/bin/bash
+# AI Server Installer for Linux (SGLang Edition)
+# vLLM 版との差分は「venv-sglang に sglang を入れる」「.env が LLM_BACKEND=sglang」だけ。
+# 本体 binary / DB bootstrap / systemd unit / db CLI は共通 (= install-linux-vllm.sh と同一手順)。
+set -e
+
+# HOME 未設定/不正だと $HOME/.local/... が /.local/... に化ける (更新ボタン経由 =
+# systemd 環境で HOME 無しが起きる)。実 uid の home を確実に解決してから使う。
+if [ -z "$HOME" ] || [ "$HOME" = "/" ]; then
+    HOME="$(getent passwd "$(id -u)" 2>/dev/null | cut -d: -f6)"
+    [ -n "$HOME" ] || HOME="/root"
+    export HOME
+fi
+
+BASE_URL="${DB_BASE_URL:-https://pub-a2cab4360f1748cab5ae1c0f12cddc0a.r2.dev/vite-latest}"
+INSTALL_DIR="${DB_INSTALL_DIR:-$HOME/.local/db}"
+ARCH="$(uname -m)"
+case "$ARCH" in x86_64|amd64) ARCH="amd64" ;; aarch64|arm64) ARCH="arm64" ;; esac
+
+echo " Installing AI Server SGLang Edition ($ARCH) to $INSTALL_DIR"
+
+# ── Privilege helper: support root-without-sudo (minimal GPU containers) ──
+# 最小コンテナ (GMI 等の CUDA イメージ) は root 直 + sudo 未インストールが普通。
+# sudo を無条件に前提にすると apt / postgres bootstrap / symlink が黙って失敗する
+# (2>/dev/null || true で握り潰される) ので、root か sudo かを判定して分岐する。
+if [ "$(id -u)" -eq 0 ]; then
+    SUDO=""                       # already root: no sudo needed
+elif command -v sudo &>/dev/null; then
+    SUDO="sudo"
+else
+    SUDO=""
+    echo "[WARN] root でも sudo でもありません。特権操作 (apt / postgres / symlink) が失敗する可能性があります。"
+fi
+# 非対話実行 (TTY 無し = self-update 等) では sudo に password prompt させない (-n)。
+# 必要な特権操作は下の各所で「導入済みなら skip」してから呼ぶので、PAM ログも汚れない。
+[ -t 0 ] || { [ -n "$SUDO" ] && SUDO="sudo -n"; }
+
+# Run psql as the postgres superuser. Handles: non-root+sudo, root w/o sudo (su), fallback.
+pg_admin() {
+    if [ -n "$SUDO" ]; then
+        $SUDO -u postgres psql "$@"
+    elif [ "$(id -u)" -eq 0 ]; then
+        su postgres -c "psql $(printf '%q ' "$@")"
+    else
+        psql "$@"
+    fi
+}
+
+mkdir -p "$INSTALL_DIR"
+
+# 更新時: 稼働中の旧プロセスを止める (systemd unit → 従来 stop.sh の順。binary 上書きの text busy 防止)
+# DB_NO_SERVICE=1 (= run.sh 経由の self-update、unit の内側で実行中) では unit を触らない (自壊防止)
+WAS_ACTIVE=0
+if [ -z "$DB_NO_SERVICE" ]; then
+    { systemctl is-active --quiet db 2>/dev/null || systemctl is-active --quiet digitalbase 2>/dev/null; } && WAS_ACTIVE=1
+    command -v systemctl &>/dev/null && $SUDO systemctl stop db digitalbase 2>/dev/null || true
+    [ -f "$INSTALL_DIR/stop.sh" ] && "$INSTALL_DIR/stop.sh" 2>/dev/null || true
+fi
+# 停止確認: 同 dir 起動の api が残っていれば中断 (稼働 binary への上書きは破損リスク)
+if [ -d "$INSTALL_DIR" ]; then
+    _RP="$(cd "$INSTALL_DIR" && pwd -P)"
+    for p in $(pgrep -fx "./api" 2>/dev/null; pgrep -fx "$_RP/api" 2>/dev/null); do
+        if [ "$(readlink /proc/$p/cwd 2>/dev/null)" = "$_RP" ]; then
+            echo "[ERROR] 稼働中のプロセスを停止できませんでした。先に停止してから再実行してください:"
+            echo "   sudo systemctl stop db   (または $INSTALL_DIR/stop.sh)"
+            exit 1
+        fi
+    done
+fi
+
+# Download unified backend binary (= api/ 統一、LLM_BACKEND=sglang で sglang mode)
+echo " Downloading AI Server backend..."
+
+BINARY_URL="$BASE_URL/lmlight-vite-linux-$ARCH"
+
+# 一時ファイルへ DL → 検証 → mv (= 失敗・中断時に稼働 binary を壊さない atomic 差替え)
+curl -fL --connect-timeout 30 --max-time 0 --retry 3 --retry-delay 5 \
+    "$BINARY_URL" -o "$INSTALL_DIR/api.new" || true
+if [ ! -s "$INSTALL_DIR/api.new" ] || ! head -c 4 "$INSTALL_DIR/api.new" | grep -q $'\x7fELF'; then
+    rm -f "$INSTALL_DIR/api.new"
+    echo "[ERROR] Failed to download backend: $BINARY_URL"
+    exit 1
+fi
+chmod +x "$INSTALL_DIR/api.new"
+mv -f "$INSTALL_DIR/api.new" "$INSTALL_DIR/api"
+
+# Python venv for SGLang + whisper (separate from PyInstaller binary)。
+# vLLM とは torch/flashinfer の版が衝突しうるので venv を分ける (= 併存させて切替できる)
+echo "Setting up Python environment for SGLang..."
+
+# Install uv (torch index の自動選択に使う)
+if ! command -v uv &>/dev/null; then
+    echo " Installing uv..."
+    curl -LsSf https://astral.sh/uv/install.sh | sh
+    export PATH="$HOME/.local/bin:$PATH"
+else
+    # --torch-backend=auto は新しめの uv が要るので最新へ
+    uv self update 2>/dev/null || true
+fi
+
+# Build/runtime deps: python3-dev (native ext builds), ffmpeg (Whisper),
+# tesseract-ocr (image/PDF OCR), ninja-build (FlashInfer JIT compile — prebuilt
+# kernel の無い新 GPU アーキで SGLang 起動時に必須). Non-fatal — minimal containers
+# may need manual install (see README); we warn instead of aborting so the rest can proceed.
+# 全 deps 導入済みなら package manager を呼ばない (= 更新時は sudo 不要で静かに素通り)
+DEPS_PRESENT=1
+command -v ffmpeg >/dev/null 2>&1 || DEPS_PRESENT=0
+command -v tesseract >/dev/null 2>&1 || DEPS_PRESENT=0
+command -v ninja >/dev/null 2>&1 || DEPS_PRESENT=0
+if command -v dpkg >/dev/null 2>&1; then
+    dpkg -s python3-dev >/dev/null 2>&1 || DEPS_PRESENT=0
+elif command -v rpm >/dev/null 2>&1; then
+    rpm -q python3-devel >/dev/null 2>&1 || DEPS_PRESENT=0
+fi
+DEPS_OK=1
+if [ "$DEPS_PRESENT" -eq 1 ]; then
+    :  # already installed — skip privileged install entirely
+elif command -v apt-get &>/dev/null; then
+    $SUDO apt-get update -qq || DEPS_OK=0
+    $SUDO apt-get install -y -qq python3-dev ffmpeg tesseract-ocr ninja-build || DEPS_OK=0
+elif command -v dnf &>/dev/null; then
+    $SUDO dnf install -y python3-devel ffmpeg tesseract ninja-build || DEPS_OK=0
+elif command -v yum &>/dev/null; then
+    $SUDO yum install -y python3-devel ffmpeg tesseract ninja-build || DEPS_OK=0
+else
+    DEPS_OK=0
+fi
+[ "$DEPS_OK" -eq 1 ] || echo "[WARN] 一部の system 依存 (python3-dev / ffmpeg / tesseract-ocr / ninja-build) を入れられませんでした。機能が失敗する場合は README を参照し手動導入してください。"
+
+SGLANG_VENV="$INSTALL_DIR/venv-sglang"
+if [ ! -d "$SGLANG_VENV" ]; then
+    uv venv --python 3.12 "$SGLANG_VENV"
+fi
+
+# SGLang: 版は固定しない (= 常に最新 stable を PyPI から取得)。
+# --torch-backend=auto が CUDA ドライバ版を見て合う PyTorch index を自動選択する。
+# [all] は flashinfer 等の kernel 一式 (= tool calling / 高速 decode に必要) を含む。
+echo " Installing latest SGLang (torch-backend=auto)..."
+uv pip install --python "$SGLANG_VENV/bin/python" "sglang[all]" --torch-backend=auto
+
+uv pip install --python "$SGLANG_VENV/bin/python" "openai-whisper>=20231117"
+
+echo "[OK] Python venv ready"
+
+# Vite Edition: frontend is embedded in the API binary, no app.tar.gz needed
+
+# DB 接続情報は env で上書き可 (DB_USER/DB_PASS/DB_NAME)、既定 digitalbase。
+# 既存 .env がある場合は下の Database setup でその DATABASE_URL を正とする。
+DB_USER="${DB_USER:-digitalbase}"
+DB_PASS="${DB_PASS:-digitalbase}"
+DB_NAME="${DB_NAME:-digitalbase}"
+
+# config の既定値でカバーされる項目は書かない (= .env は既定と異なるものだけ。行が消えても
+# 既定値で復帰でき、設定の正が config.py に一本化される)。path 系は install dir 依存なので残す。
+# chat / embed を 1 GPU に同居させる前提の配分 (= vLLM 版の 0.70/0.10 と同じ考え方)
+[ ! -f "$INSTALL_DIR/.env" ] && cat > "$INSTALL_DIR/.env" << EOF
+LLM_BACKEND=sglang
+DATABASE_URL=postgresql://${DB_USER}:${DB_PASS}@localhost:5432/${DB_NAME}
+JWT_SECRET=$(openssl rand -hex 32)
+SGLANG_PYTHON=$INSTALL_DIR/venv-sglang/bin/python
+SGLANG_AUTO_START=true
+SGLANG_EMBED_MODEL=Qwen/Qwen3-Embedding-0.6B
+SGLANG_MEM_FRACTION_CHAT=0.70
+SGLANG_MEM_FRACTION_EMBED=0.10
+WHISPER_MODEL=base
+LICENSE_FILE_PATH=$INSTALL_DIR/license.lic
+FILES_DIR=$INSTALL_DIR/files
+EOF
+
+# Database setup - parse DATABASE_URL from .env if it exists (for updates with custom DB config)
+if [ -f "$INSTALL_DIR/.env" ]; then
+    _DB_URL=$(grep -E "^DATABASE_URL=" "$INSTALL_DIR/.env" | head -1 | cut -d= -f2-)
+    if [ -n "$_DB_URL" ]; then
+        export DB_USER=$(echo "$_DB_URL" | sed -n 's|.*://\([^:]*\):.*|\1|p')
+        export DB_PASS=$(echo "$_DB_URL" | sed -n 's|.*://[^:]*:\([^@]*\)@.*|\1|p')
+        export DB_NAME=$(echo "$_DB_URL" | sed -n 's|.*/\([^?]*\).*|\1|p')
+    fi
+fi
+# ── DB bootstrap (= superuser でしかできない 3 つだけ。schema / table / index /
+# column 追加 / 初期 admin user は backend 起動時の migrations.py が冪等に作成) ──
+echo "Setting up database..."
+DB_USER="${DB_USER:-digitalbase}"
+DB_PASS="${DB_PASS:-digitalbase}"
+DB_NAME="${DB_NAME:-digitalbase}"
+
+if ! command -v psql &>/dev/null; then
+    echo "[ERROR] PostgreSQL がインストールされていません (pgvector 対応版・16 以降)。README 参照:"
+    echo "   apt install -y postgresql postgresql-\$(ls /usr/lib/postgresql 2>/dev/null | sort -V | tail -1)-pgvector"
+    exit 1
+fi
+# 未起動なら自動起動を試みる (systemd 無しコンテナは pg_ctlcluster、それ以外は systemctl)
+if ! pg_isready -q 2>/dev/null; then
+    if command -v pg_ctlcluster &>/dev/null; then
+        PGVER=$(ls /etc/postgresql 2>/dev/null | sort -V | tail -1)
+        [ -n "$PGVER" ] && $SUDO pg_ctlcluster "$PGVER" main start 2>/dev/null || true
+    elif command -v systemctl &>/dev/null; then
+        $SUDO systemctl start postgresql 2>/dev/null || true
+    fi
+fi
+if ! pg_isready -q 2>/dev/null; then
+    echo "[ERROR] PostgreSQL に接続できません (localhost:5432)。手動起動してください:"
+    echo "   pg_ctlcluster <ver> main start   # systemd 無しコンテナ"
+    echo "   systemctl start postgresql       # systemd 環境"
+    exit 1
+fi
+
+# 既に app 資格情報で接続でき pgvector も有効なら bootstrap 全体を skip
+# (= 更新時は pg_admin/sudo を一切呼ばず PAM ログを汚さない)
+if [ "$(PGPASSWORD="$DB_PASS" psql -h localhost -U "$DB_USER" -d "$DB_NAME" -tAc "SELECT 1 FROM pg_extension WHERE extname='vector'" 2>/dev/null)" = "1" ]; then
+    echo "[OK] Database already configured; setup skipped"
+else
+    # role (冪等)
+    if [ -z "$(pg_admin -tAc "SELECT 1 FROM pg_roles WHERE rolname='$DB_USER'" 2>/dev/null)" ]; then
+        pg_admin -c "CREATE USER $DB_USER WITH PASSWORD '$DB_PASS';" || echo "[WARN] CREATE USER $DB_USER に失敗"
+    fi
+    # database (冪等)
+    if [ -z "$(pg_admin -tAc "SELECT 1 FROM pg_database WHERE datname='$DB_NAME'" 2>/dev/null)" ]; then
+        pg_admin -c "CREATE DATABASE $DB_NAME OWNER $DB_USER;" || echo "[WARN] CREATE DATABASE $DB_NAME に失敗"
+    fi
+    pg_admin -c "ALTER USER $DB_USER CREATEDB;" >/dev/null 2>&1 || true
+    if ! pg_admin -d "$DB_NAME" -c "CREATE EXTENSION IF NOT EXISTS vector;" >/dev/null 2>&1; then
+        echo "[WARN] pgvector 拡張の有効化に失敗しました。RAG 機能を使う場合は:"
+        echo "   apt install -y postgresql-\$(psql -V | grep -oE '[0-9]+' | head -1)-pgvector"
+    fi
+    echo "[OK] Database setup complete (schemas and tables are created automatically on first startup)"
+fi
+
+# 正準起動 (= systemd ExecStart と start.sh の共用。env 読込 + 前処理 + exec api)
+cat > "$INSTALL_DIR/run.sh" << 'EOF'
+#!/bin/bash
+cd "$(dirname "$0")"
+set -a; [ -f .env ] && source .env; set +a
+
+# アップデート要求 marker (= 管理画面の更新ボタン。api が marker を置いて self-exit し、
+# systemd の Restart=always でここに再入する。unit 操作権限が不要な self-update)
+if [ -f .update-requested ]; then
+    UPDATE_URL=$(head -1 .update-requested)
+    rm -f .update-requested
+    echo "[UPDATE] running installer: $UPDATE_URL"
+    if curl -fsSL "$UPDATE_URL" -o .update-installer.sh; then
+        DB_NO_SERVICE=1 bash .update-installer.sh > update.log 2>&1 || echo "[UPDATE] installer failed (see update.log)"
+    else
+        echo "[UPDATE] installer download failed: $UPDATE_URL" | tee update.log
+    fi
+    rm -f .update-installer.sh
+fi
+
+# CUDA 13+: Triton bundled ptxas is CUDA 12, need system ptxas
+CUDA_MAJOR=$(nvidia-smi 2>/dev/null | grep -oP 'CUDA Version: \K\d+' || true)
+[ "${CUDA_MAJOR:-0}" -ge 13 ] && [ -f /usr/local/cuda/bin/ptxas ] && export TRITON_PTXAS_PATH=/usr/local/cuda/bin/ptxas
+
+# PyInstaller 親プロセス由来の変数を除去 (= 再起動で spawn された新プロセスが
+# 旧プロセスの一時展開 dir を再利用して即死するのを防ぐ)
+unset _MEIPASS2 _PYI_ARCHIVE_FILE _PYI_PARENT_PROCESS_LEVEL _PYI_APPLICATION_HOME_DIR
+
+exec ./api
+EOF
+chmod +x "$INSTALL_DIR/run.sh"
+
+cat > "$INSTALL_DIR/start.sh" << 'EOF'
+#!/bin/bash
+cd "$(dirname "$0")"
+set -a; [ -f .env ] && source .env; set +a
+
+# systemd 管理中は二重起動しない (= unit 経由に誘導)
+if systemctl is-active --quiet db 2>/dev/null; then
+    echo "db.service が稼働中です。操作は: db {start|stop|restart|status|logs}"
+    exit 1
+fi
+
+# Check dependencies
+
+pg_isready -q 2>/dev/null || { echo "[ERROR] PostgreSQL not running"; exit 1; }
+
+# Check NVIDIA GPU (SGLang requires CUDA)
+if ! command -v nvidia-smi &>/dev/null; then
+    echo "[WARN] nvidia-smi not found. SGLang requires NVIDIA GPU with CUDA."
+fi
+
+# Stop existing (= pidfile 優先、fallback は同 dir 起動の api のみ = 他 install を巻き添えにしない)
+[ -f api.pid ] && kill "$(cat api.pid)" 2>/dev/null
+HERE="$(pwd -P)"
+for p in $(pgrep -fx "./api" 2>/dev/null; pgrep -fx "$HERE/api" 2>/dev/null); do
+    [ "$(readlink /proc/$p/cwd 2>/dev/null)" = "$HERE" ] && kill "$p" 2>/dev/null
+done
+# 旧プロセスの完全終了を待つ (graceful shutdown 中に起動すると bind 失敗で新プロセスが死ぬ)
+for _ in $(seq 1 30); do
+    ALIVE=0
+    for p in $(pgrep -fx "./api" 2>/dev/null; pgrep -fx "$HERE/api" 2>/dev/null); do
+        [ "$(readlink /proc/$p/cwd 2>/dev/null)" = "$HERE" ] && ALIVE=1
+    done
+    [ "$ALIVE" -eq 0 ] && break
+    sleep 1
+done
+
+echo "Starting AI Server (SGLang Edition)..."
+
+# Single process: API + Web frontend (run.sh は exec するので PID = api 本体)
+./run.sh &
+API_PID=$!
+echo "$API_PID" > api.pid
+
+echo "[OK] Started - http://localhost:${API_PORT:-8000}"
+
+# Show LAN IP
+LAN_IP=$(ip -4 addr show 2>/dev/null | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | grep -v '127.0.0.1' | head -n1)
+[ -n "$LAN_IP" ] && echo "LAN: http://$LAN_IP:${API_PORT:-8000}"
+
+# Show mDNS hostname if Avahi is running
+if systemctl is-active --quiet avahi-daemon 2>/dev/null; then
+    echo "mDNS: http://$(hostname).local:${API_PORT:-8000}"
+fi
+
+# SGLang 起動状態は Python (api 側) が single source of truth で log 出力する
+# shell では予言せず、URL だけ案内
+echo ""
+echo "SGLang endpoints: chat=${SGLANG_BASE_URL:-http://localhost:30000}, embed=${SGLANG_EMBED_BASE_URL:-http://localhost:30001}"
+
+echo ""
+echo "Press Ctrl+C to stop"
+
+trap "kill $API_PID 2>/dev/null; rm -f api.pid; echo 'Stopped'" EXIT
+wait
+EOF
+chmod +x "$INSTALL_DIR/start.sh"
+
+cat > "$INSTALL_DIR/stop.sh" << 'EOF'
+#!/bin/bash
+cd "$(dirname "$0")"
+# systemd 管理中は unit を止める (止められなければ偽の Stopped を出さない)
+if systemctl is-active --quiet db 2>/dev/null; then
+    SCTL="systemctl"; [ "$(id -u)" -ne 0 ] && command -v sudo &>/dev/null && SCTL="sudo -n systemctl"
+    $SCTL stop db && { echo "Stopped (systemd)"; exit 0; }
+    echo "Failed to stop db.service (root required): sudo systemctl stop db"; exit 1
+fi
+# Kill start.sh first (which will trigger its trap to kill API/Web)
+pkill -f "db/start\.sh" 2>/dev/null
+sleep 1
+# Clean up any remaining processes (= pidfile 優先、fallback は同 dir 起動の api のみ)
+[ -f api.pid ] && kill "$(cat api.pid)" 2>/dev/null && rm -f api.pid
+HERE="$(pwd -P)"
+for p in $(pgrep -fx "./api" 2>/dev/null; pgrep -fx "$HERE/api" 2>/dev/null); do
+    [ "$(readlink /proc/$p/cwd 2>/dev/null)" = "$HERE" ] && kill "$p" 2>/dev/null
+done
+echo "Stopped"
+EOF
+chmod +x "$INSTALL_DIR/stop.sh"
+
+# ── systemd unit (サーバ標準: ブート自動起動 + クラッシュ自動復帰 + 確実な再起動) ──
+SYSTEMD_OK=0
+# DB_NO_SERVICE=1 (= self-update) では unit 再登録も skip (既存 unit のまま run.sh が exec ./api する)
+if [ -z "$DB_NO_SERVICE" ] && [ -d /run/systemd/system ] && command -v systemctl &>/dev/null && { [ "$(id -u)" -eq 0 ] || [ -n "$SUDO" ]; }; then
+    UNIT_TMP=$(mktemp)
+    cat > "$UNIT_TMP" << UNIT
+[Unit]
+Description=DigitalBase AI Server
+After=network-online.target postgresql.service
+Wants=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=$(id -un)
+WorkingDirectory=$INSTALL_DIR
+ExecStart=$INSTALL_DIR/run.sh
+Restart=always
+RestartSec=5
+TimeoutStopSec=30
+LimitNOFILE=65535
+SyslogIdentifier=db
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+    if $SUDO install -o root -g root -m 644 "$UNIT_TMP" /etc/systemd/system/db.service \
+        && $SUDO systemctl daemon-reload; then
+        rm -f "$UNIT_TMP"
+        $SUDO systemctl enable db >/dev/null 2>&1 || true
+        $SUDO systemctl disable digitalbase >/dev/null 2>&1 || true  # 旧unitのboot起動を止める(二重bind防止)
+        SYSTEMD_OK=1
+        echo "[OK] systemd unit 登録 (db.service = ブート自動起動 + クラッシュ自動復帰)"
+    else
+        rm -f "$UNIT_TMP"
+        echo "[WARN] systemd unit の登録に失敗しました (従来の start.sh 起動で動作します)"
+    fi
+fi
+
+# Create db CLI script (= systemd unit があれば systemctl 管理、無ければ従来 script)
+cat > "$INSTALL_DIR/db" << 'EOF'
+#!/bin/bash
+DB_HOME="${DB_HOME:-$HOME/.local/db}"
+if [ -f /etc/systemd/system/db.service ] && [ -d /run/systemd/system ]; then
+    SCTL="systemctl"; JCTL="journalctl"
+    [ "$(id -u)" -ne 0 ] && command -v sudo &>/dev/null && { SCTL="sudo systemctl"; JCTL="sudo journalctl"; }
+    case "$1" in
+        start)   $SCTL start db ;;
+        stop)    $SCTL stop db ;;
+        restart) $SCTL restart db ;;
+        status)  $SCTL status db --no-pager ;;
+        logs)    $JCTL -u db -f ;;
+        *)       echo "Usage: db {start|stop|restart|status|logs}"; exit 1 ;;
+    esac
+    exit $?
+fi
+case "$1" in
+    start) "$DB_HOME/start.sh" ;;
+    stop)  "$DB_HOME/stop.sh" ;;
+    *)     echo "Usage: db {start|stop}"; exit 1 ;;
+esac
+EOF
+chmod +x "$INSTALL_DIR/db"
+
+# Create symlink to /usr/local/bin (root: direct, non-root: sudo)。既に正しければ skip (= sudo 不要)
+if [ "$(readlink /usr/local/bin/db 2>/dev/null)" = "$INSTALL_DIR/db" ]; then
+    :
+elif [ -z "$SUDO" ] && [ "$(id -u)" -ne 0 ]; then
+    echo "[WARN] Run: sudo ln -sf $INSTALL_DIR/db /usr/local/bin/db"
+else
+    $SUDO ln -sf "$INSTALL_DIR/db" /usr/local/bin/db 2>/dev/null || echo "[WARN] Run: ln -sf $INSTALL_DIR/db /usr/local/bin/db"
+fi
+
+echo ""
+if [ "$SYSTEMD_OK" -eq 1 ] && [ "${WAS_ACTIVE:-0}" -eq 1 ]; then
+    $SUDO systemctl start db 2>/dev/null && echo "[OK] 更新完了、db.service を再開しました" || true
+fi
+echo "Done. Edit $INSTALL_DIR/.env then run: db start"
+[ "$SYSTEMD_OK" -eq 1 ] && echo "      (systemd 管理: ブート時自動起動。ログは db logs / journalctl -u db)"
+echo ""
+echo "Note: SGLang requires NVIDIA GPU with CUDA."
+echo "      First run will download models from HuggingFace (~3GB)."
+echo "      Models are cached at ~/.cache/huggingface/hub/"
