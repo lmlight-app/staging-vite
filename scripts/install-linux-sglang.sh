@@ -439,7 +439,4 @@ if [ "$SYSTEMD_OK" -eq 1 ] && [ "${WAS_ACTIVE:-0}" -eq 1 ]; then
 fi
 echo "Done. Edit $INSTALL_DIR/.env then run: db start"
 [ "$SYSTEMD_OK" -eq 1 ] && echo "      (systemd 管理: ブート時自動起動。ログは db logs / journalctl -u db)"
-echo ""
-echo "Note: SGLang requires NVIDIA GPU with CUDA."
-echo "      First run will download models from HuggingFace (~3GB)."
 echo "      Models are cached at ~/.cache/huggingface/hub/"
