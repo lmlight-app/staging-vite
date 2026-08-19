@@ -12,6 +12,10 @@ fi
 
 BASE_URL="${DB_BASE_URL:-https://github.com/lmlight-app/dist_vite/releases/latest/download}"
 INSTALL_DIR="${DB_INSTALL_DIR:-$HOME/.local/db}"
+# 推論 venv の Python 版。latest にしない: 新 CPython 直後は torch/flashinfer 系の
+# wheel が数ヶ月遅れて install 自体が壊れる (2026-02 時点で cp314 wheel 無しが実例)。
+# 既定は実機検証済みの版に固定し、バンプはこの 1 箇所 (or DB_PYTHON_VER) で行う。
+PYTHON_VER="${DB_PYTHON_VER:-3.12}"
 ARCH="$(uname -m)"
 case "$ARCH" in x86_64|amd64) ARCH="amd64" ;; aarch64|arm64) ARCH="arm64" ;; esac
 
@@ -125,7 +129,7 @@ fi
 [ "$DEPS_OK" -eq 1 ] || echo "[WARN] 一部の system 依存 (python3-dev / ffmpeg / tesseract-ocr / ninja-build) を入れられませんでした。機能が失敗する場合は README を参照し手動導入してください。"
 
 if [ ! -d "$INSTALL_DIR/venv" ]; then
-    uv venv --python 3.12 "$INSTALL_DIR/venv"
+    uv venv --python "$PYTHON_VER" "$INSTALL_DIR/venv"
 fi
 
 # vLLM: 版は固定しない (= 常に最新 stable を PyPI から取得)。
@@ -134,6 +138,15 @@ fi
 # CUDA_MAJOR 手動分岐はすべて不要。version bump のたびの手修正もこれで消える。
 echo " Installing latest vLLM (torch-backend=auto)..."
 uv pip install --python "$INSTALL_DIR/venv/bin/python" vllm --torch-backend=auto
+# 他 edition の残骸が import を壊すことがある (2026-08-19 実測: vllm→sglang 切替で
+# 旧 torchvision が新 torch と不整合になり vllm 自体が import 不能)。uv の依存解決
+# だけでは直らないため、検証して駄目なら venv を作り直して入れ直す (= 切替の正本手順)。
+if ! "$INSTALL_DIR/venv/bin/python" -c "import vllm" >/dev/null 2>&1; then
+    echo "[WARN] venv に他 edition の残骸があり vllm を読み込めません。venv を作り直します..."
+    rm -rf "$INSTALL_DIR/venv"
+    uv venv --python "$PYTHON_VER" "$INSTALL_DIR/venv"
+    uv pip install --python "$INSTALL_DIR/venv/bin/python" vllm --torch-backend=auto
+fi
 
 uv pip install --python "$INSTALL_DIR/venv/bin/python" "openai-whisper>=20231117"
 

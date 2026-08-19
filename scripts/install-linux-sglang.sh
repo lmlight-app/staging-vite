@@ -15,6 +15,10 @@ fi
 
 BASE_URL="${DB_BASE_URL:-https://pub-a2cab4360f1748cab5ae1c0f12cddc0a.r2.dev/vite-latest}"
 INSTALL_DIR="${DB_INSTALL_DIR:-$HOME/.local/db}"
+# 推論 venv の Python 版。latest にしない: 新 CPython 直後は torch/flashinfer 系の
+# wheel が数ヶ月遅れて install 自体が壊れる (2026-02 時点で cp314 wheel 無しが実例)。
+# 既定は実機検証済みの版に固定し、バンプはこの 1 箇所 (or DB_PYTHON_VER) で行う。
+PYTHON_VER="${DB_PYTHON_VER:-3.12}"
 ARCH="$(uname -m)"
 case "$ARCH" in x86_64|amd64) ARCH="amd64" ;; aarch64|arm64) ARCH="arm64" ;; esac
 
@@ -130,7 +134,7 @@ fi
 [ "$DEPS_OK" -eq 1 ] || echo "[WARN] 一部の system 依存 (python3-dev / ffmpeg / tesseract-ocr / ninja-build) を入れられませんでした。機能が失敗する場合は README を参照し手動導入してください。"
 
 if [ ! -d "$INSTALL_DIR/venv" ]; then
-    uv venv --python 3.12 "$INSTALL_DIR/venv"
+    uv venv --python "$PYTHON_VER" "$INSTALL_DIR/venv"
 fi
 
 # SGLang: 版は固定しない (= 常に最新 stable を PyPI から取得)。
@@ -138,6 +142,15 @@ fi
 # [all] は flashinfer 等の kernel 一式 (= tool calling / 高速 decode に必要) を含む。
 echo " Installing latest SGLang (torch-backend=auto)..."
 uv pip install --python "$INSTALL_DIR/venv/bin/python" "sglang[all]" --torch-backend=auto
+# 他 edition の残骸が import を壊すことがある (2026-08-19 実測: vllm→sglang 切替で
+# 旧 torchvision が新 torch と不整合になり sglang 自体が import 不能)。uv の依存解決
+# だけでは直らないため、検証して駄目なら venv を作り直して入れ直す (= 切替の正本手順)。
+if ! "$INSTALL_DIR/venv/bin/python" -c "import sglang" >/dev/null 2>&1; then
+    echo "[WARN] venv に他 edition の残骸があり sglang を読み込めません。venv を作り直します..."
+    rm -rf "$INSTALL_DIR/venv"
+    uv venv --python "$PYTHON_VER" "$INSTALL_DIR/venv"
+    uv pip install --python "$INSTALL_DIR/venv/bin/python" "sglang[all]" --torch-backend=auto
+fi
 
 uv pip install --python "$INSTALL_DIR/venv/bin/python" "openai-whisper>=20231117"
 
@@ -153,7 +166,8 @@ DB_NAME="${DB_NAME:-digitalbase}"
 
 # config の既定値でカバーされる項目は書かない (= .env は既定と異なるものだけ。行が消えても
 # 既定値で復帰でき、設定の正が config.py に一本化される)。path 系は install dir 依存なので残す。
-# chat / embed を 1 GPU に同居させる前提の配分 (= vLLM 版の 0.70/0.10 と同じ考え方)
+# chat / embed を 1 GPU に同居させる前提の配分。SGLang の mem-fraction は空きメモリ基準
+# のため vLLM の 0.10 相当では KV が確保できず起動不可 (2026-08-19 実機実測: 0.45 未満で拒否)
 [ ! -f "$INSTALL_DIR/.env" ] && cat > "$INSTALL_DIR/.env" << EOF
 LLM_BACKEND=sglang
 DATABASE_URL=postgresql://${DB_USER}:${DB_PASS}@localhost:5432/${DB_NAME}
@@ -161,7 +175,7 @@ JWT_SECRET=$(openssl rand -hex 32)
 SGLANG_AUTO_START=true
 SGLANG_EMBED_MODEL=Qwen/Qwen3-Embedding-0.6B
 SGLANG_MEM_FRACTION_CHAT=0.70
-SGLANG_MEM_FRACTION_EMBED=0.10
+SGLANG_MEM_FRACTION_EMBED=0.50
 WHISPER_MODEL=base
 LICENSE_FILE_PATH=$INSTALL_DIR/license.lic
 FILES_DIR=$INSTALL_DIR/files
