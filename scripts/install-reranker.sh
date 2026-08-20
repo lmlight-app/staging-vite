@@ -17,6 +17,8 @@ MODEL="${1:-BAAI/bge-reranker-v2-m3}"
 PORT="${DB_RERANK_PORT:-8010}"
 # 本体 engine と GPU を分け合うため既定は控えめ (bge-reranker-v2-m3 は 568M param ≈ 1.2GB fp16)
 GPU_FRACTION="${DB_RERANK_GPU_FRACTION:-0.10}"
+# 空きの多い GPU に載せる場合は DB_RERANK_GPU=1 等で指定 (未指定なら CUDA 既定 = GPU0)
+RERANK_GPU="${DB_RERANK_GPU:-}"
 
 echo "=============================================="
 echo " Installing Reranker ($MODEL) on port $PORT"
@@ -25,7 +27,7 @@ echo "=============================================="
 # ── 前提チェック: 共有 venv の vLLM ──
 if [ ! -x "$VENV/bin/vllm" ]; then
     echo "ERROR: vLLM not found at $VENV/bin/vllm"
-    echo "  Reranker には vLLM / SGLang edition が必要です (Ollama 版は対象外)。"
+    echo "  Reranker installer は vLLM edition 専用です (SGLang 版は今後対応、Ollama 版は対象外)。"
     exit 1
 fi
 
@@ -44,11 +46,12 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStart=$VENV/bin/vllm serve $MODEL --task score --port $PORT \
-  --gpu-memory-utilization $GPU_FRACTION --disable-log-requests
+ExecStart=$VENV/bin/vllm serve $MODEL --port $PORT \
+  --gpu-memory-utilization $GPU_FRACTION
 Restart=always
 RestartSec=5
 Environment=HF_HOME=${HF_HOME:-$HOME/.cache/huggingface}
+${RERANK_GPU:+Environment=CUDA_VISIBLE_DEVICES=$RERANK_GPU}
 
 [Install]
 WantedBy=multi-user.target"

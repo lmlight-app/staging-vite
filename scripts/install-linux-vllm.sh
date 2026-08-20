@@ -12,17 +12,15 @@ fi
 
 BASE_URL="${DB_BASE_URL:-https://github.com/lmlight-app/dist_vite/releases/latest/download}"
 INSTALL_DIR="${DB_INSTALL_DIR:-$HOME/.local/db}"
-# 推論 venv の Python 版。latest にしない: 新 CPython 直後は torch/flashinfer 系の
-# wheel が数ヶ月遅れて install 自体が壊れる (2026-02 時点で cp314 wheel 無しが実例)。
-# 既定は実機検証済みの版に固定し、バンプはこの 1 箇所 (or DB_PYTHON_VER) で行う。
-PYTHON_VER="${DB_PYTHON_VER:-3.12}"
+# 推論 venv の Python 版。検証済みの版に固定 (上書きは DB_PYTHON_VER)。
+PYTHON_VER="${DB_PYTHON_VER:-3.13}"
 ARCH="$(uname -m)"
 case "$ARCH" in x86_64|amd64) ARCH="amd64" ;; aarch64|arm64) ARCH="arm64" ;; esac
 
 echo " Installing AI Server vLLM Edition ($ARCH) to $INSTALL_DIR"
 
 # ── Privilege helper: support root-without-sudo (minimal GPU containers) ──
-# 最小コンテナ (GMI 等の CUDA イメージ) は root 直 + sudo 未インストールが普通。
+# 最小 CUDA コンテナは root 直 + sudo 未インストールが普通。
 # sudo を無条件に前提にすると apt / postgres bootstrap / symlink が黙って失敗する
 # (2>/dev/null || true で握り潰される) ので、root か sudo かを判定して分岐する。
 if [ "$(id -u)" -eq 0 ]; then
@@ -128,9 +126,8 @@ else
 fi
 [ "$DEPS_OK" -eq 1 ] || echo "[WARN] 一部の system 依存 (python3-dev / ffmpeg / tesseract-ocr / ninja-build) を入れられませんでした。機能が失敗する場合は README を参照し手動導入してください。"
 
-# edition 切替の検出 = venv 無条件作り直し。import 検証だけでは不十分と実証済み
-# (2026-08-19: `import vllm` は通るのに遅延 import される torchaudio が旧 CUDA 版のまま残り
-# 実行時に落ちた)。venv 作成時に edition marker を書き、違う edition なら丸ごと作り直す
+# edition 切替は venv を無条件に作り直す (残った依存が実行時に壊れるため import 検証では不十分)。
+# venv 作成時に edition marker を書き、違う edition なら丸ごと作り直す
 if [ -d "$INSTALL_DIR/venv" ] && [ "$(cat "$INSTALL_DIR/venv/.db-edition" 2>/dev/null)" != "vllm" ] \
    && [ -f "$INSTALL_DIR/venv/.db-edition" ]; then
     echo " 別 edition の venv を検出しました。作り直します..."
@@ -147,9 +144,7 @@ echo "vllm" > "$INSTALL_DIR/venv/.db-edition"
 # CUDA_MAJOR 手動分岐はすべて不要。version bump のたびの手修正もこれで消える。
 echo " Installing latest vLLM (torch-backend=auto)..."
 uv pip install --python "$INSTALL_DIR/venv/bin/python" vllm --torch-backend=auto
-# 他 edition の残骸が import を壊すことがある (2026-08-19 実測: vllm→sglang 切替で
-# 旧 torchvision が新 torch と不整合になり vllm 自体が import 不能)。uv の依存解決
-# だけでは直らないため、検証して駄目なら venv を作り直して入れ直す (= 切替の正本手順)。
+# 他 edition の残骸が import を壊すことがあるため、検証して駄目なら venv を作り直して入れ直す。
 if ! "$INSTALL_DIR/venv/bin/python" -c "import vllm" >/dev/null 2>&1; then
     echo "[WARN] venv に他 edition の残骸があり vllm を読み込めません。venv を作り直します..."
     rm -rf "$INSTALL_DIR/venv"
@@ -158,6 +153,10 @@ if ! "$INSTALL_DIR/venv/bin/python" -c "import vllm" >/dev/null 2>&1; then
 fi
 
 uv pip install --python "$INSTALL_DIR/venv/bin/python" "openai-whisper>=20231117"
+
+# install 完了後は wheel cache を掃除 (vllm/torch 系で数GB残るため。モデルの
+# キャッシュ (HF) は runtime が読むので消さない)
+uv cache clean >/dev/null 2>&1 || true
 
 echo "[OK] Python venv ready"
 
@@ -171,9 +170,8 @@ DB_NAME="${DB_NAME:-digitalbase}"
 
 # config の既定値でカバーされる項目は書かない (= .env は既定と異なるものだけ。行が消えても
 # 既定値で復帰でき、設定の正が config.py に一本化される)。path 系は install dir 依存なので残す。
-# 既存 .env の backend が本 edition と違うままだと「venv だけ切替わって起動不可」になる
-# (2026-08-19 実機で発生: sglang の .env のまま vLLM installer 実行 → chat が上がらない)。
-# installer は .env を書き換えない方針なので、ここでは検出して明確に警告だけする
+# 既存 .env の backend が本 edition と違うままだと起動しないため、検出して警告する
+# (installer は .env を書き換えない方針)。
 if [ -f "$INSTALL_DIR/.env" ]; then
     CURRENT_BACKEND=$(grep -E "^LLM_BACKEND=" "$INSTALL_DIR/.env" | tail -1 | cut -d= -f2)
     if [ -n "$CURRENT_BACKEND" ] && [ "$CURRENT_BACKEND" != "vllm" ]; then
