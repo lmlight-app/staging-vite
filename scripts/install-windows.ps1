@@ -18,8 +18,9 @@ $ErrorActionPreference = "Stop"
 # 設定
 $BASE_URL = if ($env:DB_BASE_URL) { $env:DB_BASE_URL } else { "https://github.com/lmlight-app/dist_vite/releases/latest/download" }
 $INSTALL_DIR = if ($env:DB_INSTALL_DIR) { $env:DB_INSTALL_DIR } else { "$env:LOCALAPPDATA\db" }
-# x64 / ARM64 (Snapdragon X 等) を自動判別 (上書きは DB_ARCH)。ARM64 上の x64 エミュレーション shell でも OS 側の実 arch を見る
-$ARCH = if ($env:DB_ARCH) { $env:DB_ARCH } elseif (($env:PROCESSOR_ARCHITEW6432 -eq "ARM64") -or ($env:PROCESSOR_ARCHITECTURE -eq "ARM64")) { "arm64" } else { "amd64" }
+# Windows は x64 exe のみ配布。ARM64 Windows でも x64 エミュレーションで動く (推論は Ollama がネイティブ)。
+# ネイティブ ARM64 exe を出す時は DB_ARCH=arm64 で切替 (release.yml の build-backend-windows-arm64 参照)
+$ARCH = if ($env:DB_ARCH) { $env:DB_ARCH } else { "amd64" }
 
 # データベース設定: env (DB_USER/DB_PASSWORD/DB_NAME) で上書き可、既定 digitalbase。.env があればそちらを優先
 $DB_USER = if ($env:DB_USER) { $env:DB_USER } else { "digitalbase" }
