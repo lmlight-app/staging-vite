@@ -122,6 +122,20 @@ if ($MISSING_DEPS -contains "tesseract") {
     Write-Warn "Tesseract OCR 未導入 (オプション: 画像OCR用)。必要なら setup-windows.ps1 で導入されます。"
 }
 
+# uv 仕込み (= 文字起こし / カスタム MCP 等の optional features の前提。Linux / macOS installer と同じ扱い、失敗しても続行)
+$UvExe = Join-Path $env:USERPROFILE ".local\bin\uv.exe"
+if (-not (Get-Command uv -ErrorAction SilentlyContinue) -and -not (Test-Path $UvExe)) {
+    Write-Info "uv (Python パッケージ管理) をインストールしています (= optional features の前提)..."
+    try {
+        powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://astral.sh/uv/install.ps1 | iex" *> $null
+        if (Test-Path $UvExe) { Write-Success "uv をインストールしました" } else { throw "uv.exe not found after install" }
+    } catch {
+        Write-Warn "uv のインストールに失敗しました。後で: powershell -ExecutionPolicy Bypass -c `"irm https://astral.sh/uv/install.ps1 | iex`""
+    }
+} else {
+    Write-Success "uv が見つかりました"
+}
+
 # ============================================================
 # ステップ 3: PostgreSQL セットアップ
 # ============================================================
