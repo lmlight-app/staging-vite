@@ -12,20 +12,58 @@ echo "Installing AI Server Vite Edition ($ARCH) to $INSTALL_DIR"
 
 mkdir -p "$INSTALL_DIR"
 
+# 更新手順の記録 (= admin の update/status が末尾を表示する。日時は UTC)
+UPDATE_LOG="$INSTALL_DIR/update.log"
+log() { echo "$*"; printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >> "$UPDATE_LOG"; }
+
+# 公開 .sha256 (release.yml が sha256sum 形式で生成し promote.sh が同居させる) と照合。
+# 取得不能・不一致は中断 (= 改竄/途中欠損 binary を稼働させない。DB_SKIP_SHA256=1 は緊急回避用)
+verify_sha256() {
+    local file="$1" src="$2" expected="" actual=""
+    if [ "${DB_SKIP_SHA256:-0}" = "1" ]; then log "[WARN] sha256 verification skipped (DB_SKIP_SHA256=1)"; return 0; fi
+    if [ -f "$src" ]; then
+        expected="$(awk '{print $1}' "$src")"
+    else
+        expected="$(curl -fsSL --retry 3 --retry-delay 5 "$src" 2>/dev/null | awk '{print $1}')"
+    fi
+    expected="$(printf '%s' "$expected" | tr 'A-F' 'a-f')"
+    if ! printf '%s' "$expected" | grep -Eq '^[0-9a-f]{64}$'; then
+        rm -f "$file"; log "[ERROR] Could not fetch checksum: $src"; exit 1
+    fi
+    actual="$(shasum -a 256 "$file" | awk '{print $1}')"
+    if [ "$expected" != "$actual" ]; then
+        rm -f "$file"; log "[ERROR] sha256 mismatch for $(basename "$src" .sha256): expected $expected, got $actual"; exit 1
+    fi
+    log "[OK] sha256 verified: $actual"
+}
+
+# 旧 binary を api.prev に残してから差し替える (= db rollback で戻せる)。hard link なので容量も時間もゼロ
+install_binary() {
+    chmod +x "$INSTALL_DIR/api.new"
+    if [ -f "$INSTALL_DIR/api" ]; then
+        rm -f "$INSTALL_DIR/api.prev"
+        ln -f "$INSTALL_DIR/api" "$INSTALL_DIR/api.prev" 2>/dev/null || cp -f "$INSTALL_DIR/api" "$INSTALL_DIR/api.prev"
+    fi
+    mv -f "$INSTALL_DIR/api.new" "$INSTALL_DIR/api"
+    log "[OK] binary installed (previous kept as api.prev for 'db rollback')"
+}
+
 [ -f "$INSTALL_DIR/stop.sh" ] && "$INSTALL_DIR/stop.sh" 2>/dev/null || true
 
 # Download single binary (API + frontend embedded)
-# 一時ファイルへ DL → 検証 → mv (= 失敗・中断時に稼働 binary を壊さない atomic 差替え)
+# 一時ファイルへ DL → sha256 検証 → 旧 binary を api.prev に退避 → mv (= 失敗・中断時に稼働 binary を壊さない)
+BINARY_URL="$BASE_URL/lmlight-vite-macos-$ARCH"
+log "[UPDATE] start: $BINARY_URL"
 echo "Downloading AI Server..."
 curl -fL --connect-timeout 30 --max-time 0 --retry 3 --retry-delay 5 \
-    "$BASE_URL/lmlight-vite-macos-$ARCH" -o "$INSTALL_DIR/api.new" || true
+    "$BINARY_URL" -o "$INSTALL_DIR/api.new" || true
 if [ ! -s "$INSTALL_DIR/api.new" ] || ! file -b "$INSTALL_DIR/api.new" | grep -q "Mach-O"; then
     rm -f "$INSTALL_DIR/api.new"
-    echo "[ERROR] Failed to download backend: $BASE_URL/lmlight-vite-macos-$ARCH"
+    log "[ERROR] Failed to download backend: $BINARY_URL"
     exit 1
 fi
-chmod +x "$INSTALL_DIR/api.new"
-mv -f "$INSTALL_DIR/api.new" "$INSTALL_DIR/api"
+verify_sha256 "$INSTALL_DIR/api.new" "$BINARY_URL.sha256"
+install_binary
 
 # uv 仕込み (= YOLO / transcribe / plugin install を将来即実行できるようにする)
 # venv は作らない (= 各 optional install script が lazy に作る、容量影響なし)
@@ -172,14 +210,30 @@ echo "Stopped"
 EOF
 chmod +x "$INSTALL_DIR/stop.sh"
 
-# Create db CLI script
-cat > "$INSTALL_DIR/db" << 'EOF'
+# Create db CLI script (設置先は install 時に焼き込む = $HOME 依存にしない)
+cat > "$INSTALL_DIR/db" << EOF
 #!/bin/bash
-DB_HOME="${DB_HOME:-$HOME/.local/db}"
+DB_HOME="\${DB_HOME:-$INSTALL_DIR}"
+EOF
+cat >> "$INSTALL_DIR/db" << 'EOF'
+_ts() { date -u +%Y-%m-%dT%H:%M:%SZ; }
+# 直前の binary (api.prev、installer が更新時に退避) と入れ替える。もう一度実行すると元に戻る
+rollback_binary() {
+    if [ ! -f "$DB_HOME/api.prev" ]; then
+        echo "[ERROR] No previous binary to roll back to ($DB_HOME/api.prev not found)"; return 1
+    fi
+    mv -f "$DB_HOME/api" "$DB_HOME/api.rollback" \
+        && mv -f "$DB_HOME/api.prev" "$DB_HOME/api" \
+        && mv -f "$DB_HOME/api.rollback" "$DB_HOME/api.prev" || return 1
+    printf 'result=rolled_back\nexit_code=0\nfinished_at=%s\n' "$(_ts)" > "$DB_HOME/.update-result"
+    echo "$(_ts) [ROLLBACK] api <-> api.prev swapped" >> "$DB_HOME/update.log"
+    echo "[OK] Rolled back to the previous binary (run 'db rollback' again to undo)"
+}
 case "$1" in
-    start) "$DB_HOME/start.sh" ;;
-    stop)  "$DB_HOME/stop.sh" ;;
-    *)     echo "Usage: db {start|stop}"; exit 1 ;;
+    start)    "$DB_HOME/start.sh" ;;
+    stop)     "$DB_HOME/stop.sh" ;;
+    rollback) "$DB_HOME/stop.sh"; rollback_binary && "$DB_HOME/start.sh" ;;
+    *)        echo "Usage: db {start|stop|rollback}"; exit 1 ;;
 esac
 EOF
 chmod +x "$INSTALL_DIR/db"

@@ -16,6 +16,62 @@ INSTALL_DIR="${DB_INSTALL_DIR:-$HOME/.local/db}"
 PYTHON_VER="${DB_PYTHON_VER:-3.13}"
 ARCH="$(uname -m)"
 case "$ARCH" in x86_64|amd64) ARCH="amd64" ;; aarch64|arm64) ARCH="arm64" ;; esac
+BINARY_NAME="lmlight-vite-linux-$ARCH"
+
+# ── 引数 / env (curl ... | bash -s -- --offline --wheelhouse DIR の形で渡す) ──
+# 版は latest.json (promote.sh が engine-versions.env から焼き込む) が正。flag / env は上書き用
+OFFLINE=0
+WHEELHOUSE="${DB_WHEELHOUSE:-}"
+VLLM_VERSION="${DB_VLLM_VERSION:-}"
+UV_VERSION="${DB_UV_VERSION:-}"
+TORCH_INDEX="${DB_TORCH_INDEX:-}"
+# latest.json に *_version が無いときの最後の砦 (= engine-versions.env と同じ値。毎回 `uv self update` はしない)
+VLLM_VERSION_DEFAULT="0.27.1"
+UV_VERSION_DEFAULT="0.12.1"
+usage() {
+    cat << 'USAGE'
+Usage: install-linux-vllm.sh [--vllm-version X.Y.Z] [--uv-version X.Y.Z] [--torch-index URL] [--offline --wheelhouse DIR]
+  --vllm-version  pin vLLM        (default: "vllm_version" in latest.json; env DB_VLLM_VERSION)
+  --uv-version    pin uv           (default: "uv_version" in latest.json; env DB_UV_VERSION)
+  --torch-index   PyTorch wheel index URL (default: "torch_index" in latest.json; empty = uv --torch-backend=auto)
+  --offline       no network: binary / checksum / uv / wheels are taken from --wheelhouse DIR
+  --wheelhouse    directory with the pre-staged files (env DB_WHEELHOUSE). See "Offline install" in README
+USAGE
+}
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --offline) OFFLINE=1 ;;
+        --wheelhouse) WHEELHOUSE="${2:?--wheelhouse requires DIR}"; shift ;;
+        --vllm-version) VLLM_VERSION="${2:?--vllm-version requires X.Y.Z}"; shift ;;
+        --uv-version) UV_VERSION="${2:?--uv-version requires X.Y.Z}"; shift ;;
+        --torch-index) TORCH_INDEX="${2:?--torch-index requires URL}"; shift ;;
+        -h|--help) usage; exit 0 ;;
+        *) echo "[ERROR] Unknown option: $1"; usage; exit 2 ;;
+    esac
+    shift
+done
+
+# offline に必要な事前配置物 (= 不足時はこの一覧で案内する)
+offline_manifest() {
+    cat << EOF
+
+Pre-stage the following files in ${WHEELHOUSE:-<wheelhouse DIR>} (fetch on an online machine with the same arch / CUDA):
+  $BINARY_NAME             backend binary      $BASE_URL/$BINARY_NAME
+  $BINARY_NAME.sha256      checksum            $BASE_URL/$BINARY_NAME.sha256
+  latest.json              version manifest    $BASE_URL/latest.json   (optional if --vllm-version is given)
+  uv                       uv binary $UV_VERSION  https://github.com/astral-sh/uv/releases (uv-<arch>-unknown-linux-gnu.tar.gz, extract 'uv')
+  *.whl                    wheels:  pip download "vllm==${VLLM_VERSION:-<version>}" "openai-whisper>=20231117" --dest . [--extra-index-url <torch index>]
+  hf-cache.tar             (optional) tar of ~/.cache/huggingface holding the models to serve
+  python$PYTHON_VER               must already be installed on this host (uv cannot download interpreters offline)
+EOF
+}
+if [ "$OFFLINE" -eq 1 ]; then
+    if [ -z "$WHEELHOUSE" ] || [ ! -d "$WHEELHOUSE" ]; then
+        echo "[ERROR] --offline requires --wheelhouse DIR (existing directory)"; offline_manifest; exit 2
+    fi
+    WHEELHOUSE="$(cd "$WHEELHOUSE" && pwd -P)"
+    export UV_OFFLINE=1 UV_NO_PROGRESS=1
+fi
 
 echo " Installing AI Server vLLM Edition ($ARCH) to $INSTALL_DIR"
 
@@ -48,6 +104,65 @@ pg_admin() {
 
 mkdir -p "$INSTALL_DIR"
 
+# 更新手順の記録 (= admin の update/status が末尾を表示する。日時は UTC)
+UPDATE_LOG="$INSTALL_DIR/update.log"
+log() { echo "$*"; printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >> "$UPDATE_LOG"; }
+
+# 公開 .sha256 (release.yml が sha256sum 形式で生成し promote.sh が同居させる) と照合。
+# 不一致は中断 (= 改竄/途中欠損 binary を稼働させない)。取得不能は警告して続行 (= checksum の配布漏れで導入を止めない。DB_SKIP_SHA256=1 は検証自体を省略)
+verify_sha256() {
+    local file="$1" src="$2" expected="" actual=""
+    if [ "${DB_SKIP_SHA256:-0}" = "1" ]; then log "[WARN] sha256 verification skipped (DB_SKIP_SHA256=1)"; return 0; fi
+    if [ -f "$src" ]; then
+        expected="$(awk '{print $1}' "$src")"
+    else
+        expected="$(curl -fsSL --retry 3 --retry-delay 5 "$src" 2>/dev/null | awk '{print $1}')"
+    fi
+    expected="$(printf '%s' "$expected" | tr 'A-F' 'a-f')"
+    if ! printf '%s' "$expected" | grep -Eq '^[0-9a-f]{64}$'; then
+        log "[WARN] checksum unavailable ($src), continuing without sha256 verification"; return 0
+    fi
+    actual="$(sha256sum "$file" | awk '{print $1}')"
+    if [ "$expected" != "$actual" ]; then
+        rm -f "$file"; log "[ERROR] sha256 mismatch for $(basename "$src" .sha256): expected $expected, got $actual"; exit 1
+    fi
+    log "[OK] sha256 verified: $actual"
+}
+
+# 旧 binary を api.prev に残してから差し替える (= db rollback で戻せる)。hard link なので容量も時間もゼロ
+install_binary() {
+    chmod +x "$INSTALL_DIR/api.new"
+    if [ -f "$INSTALL_DIR/api" ]; then
+        rm -f "$INSTALL_DIR/api.prev"
+        ln -f "$INSTALL_DIR/api" "$INSTALL_DIR/api.prev" 2>/dev/null || cp -f "$INSTALL_DIR/api" "$INSTALL_DIR/api.prev"
+    fi
+    mv -f "$INSTALL_DIR/api.new" "$INSTALL_DIR/api"
+    log "[OK] binary installed (previous kept as api.prev for 'db rollback')"
+}
+
+
+# ── 版マニフェスト latest.json → 固定版を解決 (= 新規も再実行も同じ版になる。無ければ同梱既定へ = 「たまたま最新」は入れない) ──
+if [ "$OFFLINE" -eq 1 ]; then
+    MANIFEST_FILE="$WHEELHOUSE/latest.json"
+else
+    MANIFEST_FILE="$(mktemp)"
+    curl -fsSL --retry 3 --retry-delay 5 "$BASE_URL/latest.json" -o "$MANIFEST_FILE" 2>/dev/null \
+        || log "[WARN] Could not fetch $BASE_URL/latest.json"
+fi
+manifest_get() { sed -n "s/.*\"$1\" *: *\"\([^\"]*\)\".*/\1/p" "$MANIFEST_FILE" 2>/dev/null | head -1; }
+[ -n "$VLLM_VERSION" ] || VLLM_VERSION="$(manifest_get vllm_version)"
+[ -n "$UV_VERSION" ] || UV_VERSION="$(manifest_get uv_version)"
+[ -n "$TORCH_INDEX" ] || TORCH_INDEX="$(manifest_get torch_index)"
+if [ -z "$UV_VERSION" ]; then
+    log "[WARN] latest.json has no \"uv_version\"; using bundled default uv $UV_VERSION_DEFAULT"
+    UV_VERSION="$UV_VERSION_DEFAULT"
+fi
+if [ -z "$VLLM_VERSION" ]; then
+    log "[WARN] latest.json has no \"vllm_version\"; using bundled default vLLM $VLLM_VERSION_DEFAULT (override: --vllm-version X.Y.Z)"
+    VLLM_VERSION="$VLLM_VERSION_DEFAULT"
+fi
+log "[UPDATE] target: app $(manifest_get version), vLLM $VLLM_VERSION, uv $UV_VERSION, torch index ${TORCH_INDEX:-auto}"
+
 # 更新時: 稼働中の旧プロセスを止める (systemd unit → 従来 stop.sh の順。binary 上書きの text busy 防止)
 # DB_NO_SERVICE=1 (= run.sh 経由の self-update、unit の内側で実行中) では unit を触らない (自壊防止)
 WAS_ACTIVE=0
@@ -71,30 +186,48 @@ fi
 # Download unified backend binary (= api/ 統一、LLM_BACKEND=vllm で vllm mode)
 echo " Downloading AI Server backend..."
 
-BINARY_URL="$BASE_URL/lmlight-vite-linux-$ARCH"
+BINARY_URL="$BASE_URL/$BINARY_NAME"
 
-# 一時ファイルへ DL → 検証 → mv (= 失敗・中断時に稼働 binary を壊さない atomic 差替え)
-curl -fL --connect-timeout 30 --max-time 0 --retry 3 --retry-delay 5 \
-    "$BINARY_URL" -o "$INSTALL_DIR/api.new" || true
+# 一時ファイルへ DL (offline は wheelhouse から copy) → sha256 検証 → 旧 binary を api.prev に退避 → mv
+# (= 失敗・中断時に稼働 binary を壊さない)
+if [ "$OFFLINE" -eq 1 ]; then
+    log "[UPDATE] start (offline): $WHEELHOUSE/$BINARY_NAME"
+    [ -f "$WHEELHOUSE/$BINARY_NAME" ] || { log "[ERROR] $BINARY_NAME not found in $WHEELHOUSE"; offline_manifest; exit 1; }
+    cp -f "$WHEELHOUSE/$BINARY_NAME" "$INSTALL_DIR/api.new"
+    SHA_SRC="$WHEELHOUSE/$BINARY_NAME.sha256"
+else
+    log "[UPDATE] start: $BINARY_URL"
+    curl -fL --connect-timeout 30 --max-time 0 --retry 3 --retry-delay 5 \
+        "$BINARY_URL" -o "$INSTALL_DIR/api.new" || true
+    SHA_SRC="$BINARY_URL.sha256"
+fi
 if [ ! -s "$INSTALL_DIR/api.new" ] || ! head -c 4 "$INSTALL_DIR/api.new" | grep -q $'\x7fELF'; then
     rm -f "$INSTALL_DIR/api.new"
-    echo "[ERROR] Failed to download backend: $BINARY_URL"
+    log "[ERROR] Failed to download backend: $BINARY_URL"
     exit 1
 fi
-chmod +x "$INSTALL_DIR/api.new"
-mv -f "$INSTALL_DIR/api.new" "$INSTALL_DIR/api"
+verify_sha256 "$INSTALL_DIR/api.new" "$SHA_SRC"
+install_binary
 
 # Python venv for vLLM + whisper (separate from PyInstaller binary)
 echo "Setting up Python environment for vLLM..."
 
-# Install uv (recommended by vLLM for faster and more reliable installation)
-if ! command -v uv &>/dev/null; then
-    echo " Installing uv..."
-    curl -LsSf https://astral.sh/uv/install.sh | sh
-    export PATH="$HOME/.local/bin:$PATH"
+# uv は版固定 (= `uv self update` で毎回動くのを止める)。違う版が居れば固定版を入れて PATH 先頭に置く
+export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
+UV_HAVE="$(uv --version 2>/dev/null | awk '{print $2}' || true)"
+if [ "$UV_HAVE" = "$UV_VERSION" ]; then
+    log "[OK] uv $UV_VERSION"
+elif [ "$OFFLINE" -eq 1 ]; then
+    [ -f "$WHEELHOUSE/uv" ] || { log "[ERROR] uv binary not found in $WHEELHOUSE"; offline_manifest; exit 1; }
+    mkdir -p "$HOME/.local/bin" && install -m 755 "$WHEELHOUSE/uv" "$HOME/.local/bin/uv"
+    hash -r
+    log "[OK] uv $(uv --version 2>/dev/null | awk '{print $2}') (from wheelhouse)"
 else
-    # --torch-backend=auto は新しめの uv が要るので最新へ
-    uv self update 2>/dev/null || true
+    log "Installing uv $UV_VERSION (found: ${UV_HAVE:-none})..."
+    curl -LsSf "https://astral.sh/uv/$UV_VERSION/install.sh" | sh
+    hash -r
+    UV_HAVE="$(uv --version 2>/dev/null | awk '{print $2}' || true)"
+    [ "$UV_HAVE" = "$UV_VERSION" ] || log "[WARN] uv on PATH is ${UV_HAVE:-none} (expected $UV_VERSION)"
 fi
 
 # Build/runtime deps: python3-dev (native ext builds), ffmpeg (Whisper),
@@ -114,6 +247,8 @@ fi
 DEPS_OK=1
 if [ "$DEPS_PRESENT" -eq 1 ]; then
     :  # already installed — skip privileged install entirely
+elif [ "$OFFLINE" -eq 1 ]; then
+    DEPS_OK=0  # offline では package manager を呼ばない (= 事前に OS package を入れておく)
 elif command -v apt-get &>/dev/null; then
     $SUDO apt-get update -qq || DEPS_OK=0
     $SUDO apt-get install -y -qq python3-dev ffmpeg tesseract-ocr ninja-build || DEPS_OK=0
@@ -133,26 +268,51 @@ if [ -d "$INSTALL_DIR/venv" ] && [ "$(cat "$INSTALL_DIR/venv/.db-edition" 2>/dev
     echo " 別 edition の venv を検出しました。作り直します..."
     rm -rf "$INSTALL_DIR/venv"
 fi
+# offline では interpreter を download できないので system の python$PYTHON_VER 必須 (--no-python-downloads で明示的に落とす)
+VENV_ARGS=(--python "$PYTHON_VER")
+[ "$OFFLINE" -eq 1 ] && VENV_ARGS+=(--no-python-downloads)
 if [ ! -d "$INSTALL_DIR/venv" ]; then
-    uv venv --python "$PYTHON_VER" "$INSTALL_DIR/venv"
+    uv venv "${VENV_ARGS[@]}" "$INSTALL_DIR/venv"
 fi
 echo "vllm" > "$INSTALL_DIR/venv/.db-edition"
 
-# vLLM: 版は固定しない (= 常に最新 stable を PyPI から取得)。
-# --torch-backend=auto が CUDA ドライバ版を見て合う PyTorch index を自動選択
-# するので、旧方式の VLLM_VER pin / wheels.vllm.ai version-pathed index /
-# CUDA_MAJOR 手動分岐はすべて不要。version bump のたびの手修正もこれで消える。
-echo " Installing latest vLLM (torch-backend=auto)..."
-uv pip install --python "$INSTALL_DIR/venv/bin/python" vllm --torch-backend=auto
+# vLLM: latest.json の vllm_version に固定 (= 新規も再実行も同じ版。再実行は pin へ upgrade / downgrade される)。
+# torch index は torch_index があれば --extra-index-url、無ければ uv の --torch-backend=auto (CUDA ドライバ版から自動選択)。
+# offline は wheelhouse の wheel だけで解決する (--no-index)。
+PIP_ARGS=(--python "$INSTALL_DIR/venv/bin/python")
+if [ "$OFFLINE" -eq 1 ]; then
+    PIP_ARGS+=(--no-index --find-links "$WHEELHOUSE")
+elif [ -n "$TORCH_INDEX" ]; then
+    PIP_ARGS+=(--extra-index-url "$TORCH_INDEX")
+else
+    PIP_ARGS+=(--torch-backend=auto)
+fi
+install_engine() { uv pip install "${PIP_ARGS[@]}" "vllm==$VLLM_VERSION"; }
+log "Installing vLLM $VLLM_VERSION..."
+install_engine
 # 他 edition の残骸が import を壊すことがあるため、検証して駄目なら venv を作り直して入れ直す。
 if ! "$INSTALL_DIR/venv/bin/python" -c "import vllm" >/dev/null 2>&1; then
-    echo "[WARN] venv に他 edition の残骸があり vllm を読み込めません。venv を作り直します..."
+    log "[WARN] vllm import failed (leftovers from another edition). Recreating venv..."
     rm -rf "$INSTALL_DIR/venv"
-    uv venv --python "$PYTHON_VER" "$INSTALL_DIR/venv"
-    uv pip install --python "$INSTALL_DIR/venv/bin/python" vllm --torch-backend=auto
+    uv venv "${VENV_ARGS[@]}" "$INSTALL_DIR/venv"
+    echo "vllm" > "$INSTALL_DIR/venv/.db-edition"
+    install_engine
 fi
+VLLM_INSTALLED="$("$INSTALL_DIR/venv/bin/python" -c "import importlib.metadata as m; print(m.version('vllm'))" 2>/dev/null || true)"
+if [ "$VLLM_INSTALLED" != "$VLLM_VERSION" ]; then
+    log "[ERROR] vLLM ${VLLM_INSTALLED:-none} is installed, expected $VLLM_VERSION"
+    exit 1
+fi
+log "[OK] vLLM $VLLM_INSTALLED"
 
-uv pip install --python "$INSTALL_DIR/venv/bin/python" "openai-whisper>=20231117"
+uv pip install "${PIP_ARGS[@]}" "openai-whisper>=20231117"
+
+# offline: 事前に固めたモデルキャッシュがあれば展開 (= 初回起動の HuggingFace download を不要にする)
+if [ "$OFFLINE" -eq 1 ] && [ -f "$WHEELHOUSE/hf-cache.tar" ]; then
+    HF_DIR="${HF_HOME:-$HOME/.cache/huggingface}"
+    mkdir -p "$HF_DIR" && tar -xf "$WHEELHOUSE/hf-cache.tar" -C "$HF_DIR"
+    log "[OK] model cache extracted to $HF_DIR"
+fi
 
 # install 完了後は wheel cache を掃除 (vllm/torch 系で数GB残るため。モデルの
 # キャッシュ (HF) は runtime が読むので消さない)
@@ -260,16 +420,43 @@ set -a; [ -f .env ] && source .env; set +a
 
 # アップデート要求 marker (= 管理画面の更新ボタン。api が marker を置いて self-exit し、
 # systemd の Restart=always でここに再入する。unit 操作権限が不要な self-update)
+# 進行中 .update-running / 結果 .update-result / 手順 update.log は admin の update/status が読む。
+# installer は旧 binary を api.prev に残すので、失敗・起動不能時は `db rollback` で戻す
+_ts() { date -u +%Y-%m-%dT%H:%M:%SZ; }
+if [ -f .update-running ] && [ ! -f .update-requested ]; then
+    # 前回の installer が途中で落ちた (= systemd stop / 電源断)。結果だけ残して通常起動へ
+    echo "$(_ts) [UPDATE] previous update was interrupted" >> update.log
+    printf 'result=interrupted\nexit_code=\nfinished_at=%s\n' "$(_ts)" > .update-result
+    rm -f .update-running
+fi
 if [ -f .update-requested ]; then
     UPDATE_URL=$(head -1 .update-requested)
     rm -f .update-requested
+    touch .update-running
+    # installer に自分の設置 dir を教える (= $HOME/.local/db 以外の設置でも同じ dir を更新する)
+    DB_INSTALL_DIR="$(pwd -P)"; export DB_INSTALL_DIR
+    echo "$(_ts) [UPDATE] running installer: $UPDATE_URL" >> update.log
     echo "[UPDATE] running installer: $UPDATE_URL"
+    RC=1
     if curl -fsSL "$UPDATE_URL" -o .update-installer.sh; then
-        DB_NO_SERVICE=1 bash .update-installer.sh > update.log 2>&1 || echo "[UPDATE] installer failed (see update.log)"
+        # installer 自身が手順を update.log に書くので、生ログは別ファイルに取り失敗時だけ末尾を寄せる
+        if DB_NO_SERVICE=1 bash .update-installer.sh > .update-installer.out 2>&1; then RC=0; else RC=$?; fi
+        if [ "$RC" -ne 0 ]; then
+            echo "[UPDATE] installer failed (rc=$RC, see update.log)"
+            tail -n 40 .update-installer.out >> update.log
+        fi
     else
-        echo "[UPDATE] installer download failed: $UPDATE_URL" | tee update.log
+        echo "$(_ts) [UPDATE] installer download failed: $UPDATE_URL" >> update.log
+        echo "[UPDATE] installer download failed: $UPDATE_URL"
     fi
-    rm -f .update-installer.sh
+    if [ "$RC" -eq 0 ]; then
+        echo "$(_ts) [UPDATE] result: ok" >> update.log
+        printf 'result=ok\nexit_code=0\nfinished_at=%s\n' "$(_ts)" > .update-result
+    else
+        echo "$(_ts) [UPDATE] result: failed (rc=$RC). Previous binary is api.prev: db rollback" >> update.log
+        printf 'result=failed\nexit_code=%s\nfinished_at=%s\n' "$RC" "$(_ts)" > .update-result
+    fi
+    rm -f .update-installer.sh .update-running
 fi
 
 # CUDA 13+: Triton bundled ptxas is CUDA 12, need system ptxas
@@ -392,7 +579,9 @@ WorkingDirectory=$INSTALL_DIR
 ExecStart=$INSTALL_DIR/run.sh
 Restart=always
 RestartSec=5
-TimeoutStopSec=30
+# vLLM/SGLang を chat/embed/vision 分 SIGTERM→SIGKILL する時間 (= 途中で SIGKILL されると GPU が孤児化)。
+# pkg/db.service と同値。systemd は行末コメント非対応なので値と同じ行に書かない
+TimeoutStopSec=180
 LimitNOFILE=65535
 SyslogIdentifier=db
 
@@ -413,26 +602,46 @@ UNIT
 fi
 
 # Create db CLI script (= systemd unit があれば systemctl 管理、無ければ従来 script)
-cat > "$INSTALL_DIR/db" << 'EOF'
+# 設置先は install 時に焼き込む (= $HOME 依存だと sudo / systemd 経由で別 dir を見る)
+cat > "$INSTALL_DIR/db" << EOF
 #!/bin/bash
-DB_HOME="${DB_HOME:-$HOME/.local/db}"
+DB_HOME="\${DB_HOME:-$INSTALL_DIR}"
+EOF
+cat >> "$INSTALL_DIR/db" << 'EOF'
+_ts() { date -u +%Y-%m-%dT%H:%M:%SZ; }
+# 直前の binary (api.prev、installer が更新時に退避) と入れ替える。もう一度実行すると元に戻る。
+# update.log / .update-result にも記録 (= admin の update/status に出る)
+rollback_binary() {
+    if [ ! -f "$DB_HOME/api.prev" ]; then
+        echo "[ERROR] No previous binary to roll back to ($DB_HOME/api.prev not found)"; return 1
+    fi
+    mv -f "$DB_HOME/api" "$DB_HOME/api.rollback" \
+        && mv -f "$DB_HOME/api.prev" "$DB_HOME/api" \
+        && mv -f "$DB_HOME/api.rollback" "$DB_HOME/api.prev" || return 1
+    rm -f "$DB_HOME/.update-requested"
+    printf 'result=rolled_back\nexit_code=0\nfinished_at=%s\n' "$(_ts)" > "$DB_HOME/.update-result"
+    echo "$(_ts) [ROLLBACK] api <-> api.prev swapped" >> "$DB_HOME/update.log"
+    echo "[OK] Rolled back to the previous binary (run 'db rollback' again to undo)"
+}
 if [ -f /etc/systemd/system/db.service ] && [ -d /run/systemd/system ]; then
     SCTL="systemctl"; JCTL="journalctl"
     [ "$(id -u)" -ne 0 ] && command -v sudo &>/dev/null && { SCTL="sudo systemctl"; JCTL="sudo journalctl"; }
     case "$1" in
-        start)   $SCTL start db ;;
-        stop)    $SCTL stop db ;;
-        restart) $SCTL restart db ;;
-        status)  $SCTL status db --no-pager ;;
-        logs)    $JCTL -u db -f ;;
-        *)       echo "Usage: db {start|stop|restart|status|logs}"; exit 1 ;;
+        start)    $SCTL start db ;;
+        stop)     $SCTL stop db ;;
+        restart)  $SCTL restart db ;;
+        rollback) $SCTL stop db && rollback_binary && $SCTL start db ;;
+        status)   $SCTL status db --no-pager ;;
+        logs)     $JCTL -u db -f ;;
+        *)        echo "Usage: db {start|stop|restart|rollback|status|logs}"; exit 1 ;;
     esac
     exit $?
 fi
 case "$1" in
-    start) "$DB_HOME/start.sh" ;;
-    stop)  "$DB_HOME/stop.sh" ;;
-    *)     echo "Usage: db {start|stop}"; exit 1 ;;
+    start)    "$DB_HOME/start.sh" ;;
+    stop)     "$DB_HOME/stop.sh" ;;
+    rollback) "$DB_HOME/stop.sh"; rollback_binary && "$DB_HOME/start.sh" ;;
+    *)        echo "Usage: db {start|stop|rollback}"; exit 1 ;;
 esac
 EOF
 chmod +x "$INSTALL_DIR/db"

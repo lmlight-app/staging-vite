@@ -44,7 +44,66 @@ pg_admin() {
     fi
 }
 
+# ── Ollama (= この edition の推論 backend)。既定は導入確認のみ、--with-ollama (or DB_WITH_OLLAMA=1) で公式 script により導入 ──
+# curl ... | bash -s -- --with-ollama の形で渡す。未導入でも service は入れて続行 (= 後から Ollama を入れれば動く。導入を止めない)
+WITH_OLLAMA="${DB_WITH_OLLAMA:-0}"
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --with-ollama) WITH_OLLAMA=1 ;;
+        -h|--help) echo "Usage: install-linux.sh [--with-ollama]"; exit 0 ;;
+        *) echo "[ERROR] Unknown option: $1 (usage: install-linux.sh [--with-ollama])"; exit 2 ;;
+    esac
+    shift
+done
+if ! command -v ollama >/dev/null 2>&1; then
+    if [ "$WITH_OLLAMA" = "1" ]; then
+        echo "Installing Ollama (official script)..."
+        curl -fsSL https://ollama.com/install.sh | sh
+        command -v ollama >/dev/null 2>&1 || { echo "[ERROR] Ollama install failed"; exit 1; }
+    else
+        echo "[WARN] Ollama is not installed. The service will be installed, but chat needs Ollama. Install it later with:"
+        echo "   curl -fsSL https://ollama.com/install.sh | sh"
+        echo "   (or re-run this installer with --with-ollama:  curl -fsSL <installer URL> | bash -s -- --with-ollama)"
+    fi
+fi
+
 mkdir -p "$INSTALL_DIR"
+
+# 更新手順の記録 (= admin の update/status が末尾を表示する。日時は UTC)
+UPDATE_LOG="$INSTALL_DIR/update.log"
+log() { echo "$*"; printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >> "$UPDATE_LOG"; }
+
+# 公開 .sha256 (release.yml が sha256sum 形式で生成し promote.sh が同居させる) と照合。
+# 不一致は中断 (= 改竄/途中欠損 binary を稼働させない)。取得不能は警告して続行 (= checksum の配布漏れで導入を止めない。DB_SKIP_SHA256=1 は検証自体を省略)
+verify_sha256() {
+    local file="$1" src="$2" expected="" actual=""
+    if [ "${DB_SKIP_SHA256:-0}" = "1" ]; then log "[WARN] sha256 verification skipped (DB_SKIP_SHA256=1)"; return 0; fi
+    if [ -f "$src" ]; then
+        expected="$(awk '{print $1}' "$src")"
+    else
+        expected="$(curl -fsSL --retry 3 --retry-delay 5 "$src" 2>/dev/null | awk '{print $1}')"
+    fi
+    expected="$(printf '%s' "$expected" | tr 'A-F' 'a-f')"
+    if ! printf '%s' "$expected" | grep -Eq '^[0-9a-f]{64}$'; then
+        log "[WARN] checksum unavailable ($src), continuing without sha256 verification"; return 0
+    fi
+    actual="$(sha256sum "$file" | awk '{print $1}')"
+    if [ "$expected" != "$actual" ]; then
+        rm -f "$file"; log "[ERROR] sha256 mismatch for $(basename "$src" .sha256): expected $expected, got $actual"; exit 1
+    fi
+    log "[OK] sha256 verified: $actual"
+}
+
+# 旧 binary を api.prev に残してから差し替える (= db rollback で戻せる)。hard link なので容量も時間もゼロ
+install_binary() {
+    chmod +x "$INSTALL_DIR/api.new"
+    if [ -f "$INSTALL_DIR/api" ]; then
+        rm -f "$INSTALL_DIR/api.prev"
+        ln -f "$INSTALL_DIR/api" "$INSTALL_DIR/api.prev" 2>/dev/null || cp -f "$INSTALL_DIR/api" "$INSTALL_DIR/api.prev"
+    fi
+    mv -f "$INSTALL_DIR/api.new" "$INSTALL_DIR/api"
+    log "[OK] binary installed (previous kept as api.prev for 'db rollback')"
+}
 
 # 更新時: 稼働中の旧プロセスを止める (systemd unit → 従来 stop.sh の順。binary 上書きの text busy 防止)
 # DB_NO_SERVICE=1 (= run.sh 経由の self-update、unit の内側で実行中) では unit を触らない (自壊防止)
@@ -67,17 +126,19 @@ if [ -d "$INSTALL_DIR" ]; then
 fi
 
 # Download single binary (API + frontend embedded)
-# 一時ファイルへ DL → 検証 → mv (= 失敗・中断時に稼働 binary を壊さない atomic 差替え)
+# 一時ファイルへ DL → sha256 検証 → 旧 binary を api.prev に退避 → mv (= 失敗・中断時に稼働 binary を壊さない)
+BINARY_URL="$BASE_URL/lmlight-vite-linux-$ARCH"
+log "[UPDATE] start: $BINARY_URL"
 echo "Downloading AI Server..."
 curl -fL --connect-timeout 30 --max-time 0 --retry 3 --retry-delay 5 \
-    "$BASE_URL/lmlight-vite-linux-$ARCH" -o "$INSTALL_DIR/api.new" || true
+    "$BINARY_URL" -o "$INSTALL_DIR/api.new" || true
 if [ ! -s "$INSTALL_DIR/api.new" ] || ! head -c 4 "$INSTALL_DIR/api.new" | grep -q $'\x7fELF'; then
     rm -f "$INSTALL_DIR/api.new"
-    echo "[ERROR] Failed to download backend: $BASE_URL/lmlight-vite-linux-$ARCH"
+    log "[ERROR] Failed to download backend: $BINARY_URL"
     exit 1
 fi
-chmod +x "$INSTALL_DIR/api.new"
-mv -f "$INSTALL_DIR/api.new" "$INSTALL_DIR/api"
+verify_sha256 "$INSTALL_DIR/api.new" "$BINARY_URL.sha256"
+install_binary
 
 # uv 仕込み (= YOLO / transcribe / plugin install を将来即実行できるようにする)
 # venv は作らない (= 各 optional install script が lazy に作る、容量影響なし)
@@ -171,20 +232,49 @@ set -a; [ -f .env ] && source .env; set +a
 
 # アップデート要求 marker (= 管理画面の更新ボタン。api が marker を置いて self-exit し、
 # systemd の Restart=always でここに再入する。unit 操作権限が不要な self-update)
+# 進行中 .update-running / 結果 .update-result / 手順 update.log は admin の update/status が読む。
+# installer は旧 binary を api.prev に残すので、失敗・起動不能時は `db rollback` で戻す
+_ts() { date -u +%Y-%m-%dT%H:%M:%SZ; }
+if [ -f .update-running ] && [ ! -f .update-requested ]; then
+    # 前回の installer が途中で落ちた (= systemd stop / 電源断)。結果だけ残して通常起動へ
+    echo "$(_ts) [UPDATE] previous update was interrupted" >> update.log
+    printf 'result=interrupted\nexit_code=\nfinished_at=%s\n' "$(_ts)" > .update-result
+    rm -f .update-running
+fi
 if [ -f .update-requested ]; then
     UPDATE_URL=$(head -1 .update-requested)
     rm -f .update-requested
+    touch .update-running
+    # installer に自分の設置 dir を教える (= $HOME/.local/db 以外の設置でも同じ dir を更新する)
+    DB_INSTALL_DIR="$(pwd -P)"; export DB_INSTALL_DIR
+    echo "$(_ts) [UPDATE] running installer: $UPDATE_URL" >> update.log
     echo "[UPDATE] running installer: $UPDATE_URL"
+    RC=1
     if curl -fsSL "$UPDATE_URL" -o .update-installer.sh; then
-        DB_NO_SERVICE=1 bash .update-installer.sh > update.log 2>&1 || echo "[UPDATE] installer failed (see update.log)"
+        # installer 自身が手順を update.log に書くので、生ログは別ファイルに取り失敗時だけ末尾を寄せる
+        if DB_NO_SERVICE=1 bash .update-installer.sh > .update-installer.out 2>&1; then RC=0; else RC=$?; fi
+        if [ "$RC" -ne 0 ]; then
+            echo "[UPDATE] installer failed (rc=$RC, see update.log)"
+            tail -n 40 .update-installer.out >> update.log
+        fi
     else
-        echo "[UPDATE] installer download failed: $UPDATE_URL" | tee update.log
+        echo "$(_ts) [UPDATE] installer download failed: $UPDATE_URL" >> update.log
+        echo "[UPDATE] installer download failed: $UPDATE_URL"
     fi
-    rm -f .update-installer.sh
+    if [ "$RC" -eq 0 ]; then
+        echo "$(_ts) [UPDATE] result: ok" >> update.log
+        printf 'result=ok\nexit_code=0\nfinished_at=%s\n' "$(_ts)" > .update-result
+    else
+        echo "$(_ts) [UPDATE] result: failed (rc=$RC). Previous binary is api.prev: db rollback" >> update.log
+        printf 'result=failed\nexit_code=%s\nfinished_at=%s\n' "$RC" "$(_ts)" > .update-result
+    fi
+    rm -f .update-installer.sh .update-running
 fi
 
-# Ollama 未起動なら起動 (公式 install 済みなら ollama.service が既に居るので通常 skip)
-pgrep -x ollama >/dev/null || { ollama serve &>/dev/null & sleep 2; }
+# Ollama 未起動なら起動 (公式 install 済みなら ollama.service が既に居るので通常 skip。未導入なら skip)
+if command -v ollama >/dev/null 2>&1; then
+    pgrep -x ollama >/dev/null || { ollama serve &>/dev/null & sleep 2; }
+fi
 
 # PyInstaller 親プロセス由来の変数を除去 (= 再起動で spawn された新プロセスが
 # 旧プロセスの一時展開 dir を再利用して即死するのを防ぐ)
@@ -290,7 +380,9 @@ WorkingDirectory=$INSTALL_DIR
 ExecStart=$INSTALL_DIR/run.sh
 Restart=always
 RestartSec=5
-TimeoutStopSec=30
+# vLLM/SGLang を chat/embed/vision 分 SIGTERM→SIGKILL する時間 (= 途中で SIGKILL されると GPU が孤児化)。
+# pkg/db.service と同値。systemd は行末コメント非対応なので値と同じ行に書かない
+TimeoutStopSec=180
 LimitNOFILE=65535
 SyslogIdentifier=db
 
@@ -311,26 +403,46 @@ UNIT
 fi
 
 # Create db CLI script (= systemd unit があれば systemctl 管理、無ければ従来 script)
-cat > "$INSTALL_DIR/db" << 'EOF'
+# 設置先は install 時に焼き込む (= $HOME 依存だと sudo / systemd 経由で別 dir を見る)
+cat > "$INSTALL_DIR/db" << EOF
 #!/bin/bash
-DB_HOME="${DB_HOME:-$HOME/.local/db}"
+DB_HOME="\${DB_HOME:-$INSTALL_DIR}"
+EOF
+cat >> "$INSTALL_DIR/db" << 'EOF'
+_ts() { date -u +%Y-%m-%dT%H:%M:%SZ; }
+# 直前の binary (api.prev、installer が更新時に退避) と入れ替える。もう一度実行すると元に戻る。
+# update.log / .update-result にも記録 (= admin の update/status に出る)
+rollback_binary() {
+    if [ ! -f "$DB_HOME/api.prev" ]; then
+        echo "[ERROR] No previous binary to roll back to ($DB_HOME/api.prev not found)"; return 1
+    fi
+    mv -f "$DB_HOME/api" "$DB_HOME/api.rollback" \
+        && mv -f "$DB_HOME/api.prev" "$DB_HOME/api" \
+        && mv -f "$DB_HOME/api.rollback" "$DB_HOME/api.prev" || return 1
+    rm -f "$DB_HOME/.update-requested"
+    printf 'result=rolled_back\nexit_code=0\nfinished_at=%s\n' "$(_ts)" > "$DB_HOME/.update-result"
+    echo "$(_ts) [ROLLBACK] api <-> api.prev swapped" >> "$DB_HOME/update.log"
+    echo "[OK] Rolled back to the previous binary (run 'db rollback' again to undo)"
+}
 if [ -f /etc/systemd/system/db.service ] && [ -d /run/systemd/system ]; then
     SCTL="systemctl"; JCTL="journalctl"
     [ "$(id -u)" -ne 0 ] && command -v sudo &>/dev/null && { SCTL="sudo systemctl"; JCTL="sudo journalctl"; }
     case "$1" in
-        start)   $SCTL start db ;;
-        stop)    $SCTL stop db ;;
-        restart) $SCTL restart db ;;
-        status)  $SCTL status db --no-pager ;;
-        logs)    $JCTL -u db -f ;;
-        *)       echo "Usage: db {start|stop|restart|status|logs}"; exit 1 ;;
+        start)    $SCTL start db ;;
+        stop)     $SCTL stop db ;;
+        restart)  $SCTL restart db ;;
+        rollback) $SCTL stop db && rollback_binary && $SCTL start db ;;
+        status)   $SCTL status db --no-pager ;;
+        logs)     $JCTL -u db -f ;;
+        *)        echo "Usage: db {start|stop|restart|rollback|status|logs}"; exit 1 ;;
     esac
     exit $?
 fi
 case "$1" in
-    start) "$DB_HOME/start.sh" ;;
-    stop)  "$DB_HOME/stop.sh" ;;
-    *)     echo "Usage: db {start|stop}"; exit 1 ;;
+    start)    "$DB_HOME/start.sh" ;;
+    stop)     "$DB_HOME/stop.sh" ;;
+    rollback) "$DB_HOME/stop.sh"; rollback_binary && "$DB_HOME/start.sh" ;;
+    *)        echo "Usage: db {start|stop|rollback}"; exit 1 ;;
 esac
 EOF
 chmod +x "$INSTALL_DIR/db"
