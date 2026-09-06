@@ -30,12 +30,13 @@ UV_VERSION="${DB_UV_VERSION:-}"
 TORCH_INDEX="${DB_TORCH_INDEX:-}"
 # latest.json に *_version が無いときの最後の砦 (= engine-versions.env と同じ値。毎回 `uv self update` はしない)
 SGLANG_VERSION_DEFAULT="latest"
-UV_VERSION_DEFAULT="0.12.1"
+UV_VERSION_DEFAULT="latest"
+UV_MIN_VERSION="0.12.1"   # latest 指定時、これ未満の uv は最新へ上げる (= 古い uv が新しい wheel を解決できない事故を防ぐ)
 usage() {
     cat << 'USAGE'
 Usage: install-linux-sglang.sh [--sglang-version X.Y.Z] [--uv-version X.Y.Z] [--torch-index URL] [--offline --wheelhouse DIR]
   --sglang-version  SGLang: latest | X.Y.Z        (default: "sglang_version" in latest.json; env DB_SGLANG_VERSION)
-  --uv-version    pin uv           (default: "uv_version" in latest.json; env DB_UV_VERSION)
+  --uv-version    uv: latest | X.Y.Z             (default: "uv_version" in latest.json, else latest; env DB_UV_VERSION)
   --torch-index   PyTorch wheel index URL (default: "torch_index" in latest.json; empty = uv --torch-backend=auto)
   --offline       no network: binary / checksum / uv / wheels are taken from --wheelhouse DIR
   --wheelhouse    directory with the pre-staged files (env DB_WHEELHOUSE). See "Offline install" in README
@@ -46,7 +47,7 @@ while [ $# -gt 0 ]; do
         --offline) OFFLINE=1 ;;
         --wheelhouse) WHEELHOUSE="${2:?--wheelhouse requires DIR}"; shift ;;
         --sglang-version) SGLANG_VERSION="${2:?--sglang-version requires latest|nightly|X.Y.Z}"; shift ;;
-        --uv-version) UV_VERSION="${2:?--uv-version requires X.Y.Z}"; shift ;;
+        --uv-version) UV_VERSION="${2:?--uv-version requires latest|X.Y.Z}"; shift ;;
         --torch-index) TORCH_INDEX="${2:?--torch-index requires URL}"; shift ;;
         -h|--help) usage; exit 0 ;;
         *) echo "[ERROR] Unknown option: $1"; usage; exit 2 ;;
@@ -217,10 +218,19 @@ install_binary
 # torch 等の共有依存を sglang の要求に揃える (残骸は未使用なので害なし)
 echo "Setting up Python environment for SGLang..."
 
-# uv は版固定 (= `uv self update` で毎回動くのを止める)。違う版が居れば固定版を入れて PATH 先頭に置く
+# uv: latest (既定) = 無ければ最新を入れ、居れば最低版 UV_MIN_VERSION 未満のときだけ最新へ上げる (= 毎回 self update はしない、
+# 新しい uv を入れている環境を巻き戻さない)。X.Y.Z = その版に固定 (違えば入れ替え)
 export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
 UV_HAVE="$(uv --version 2>/dev/null | awk '{print $2}' || true)"
-if [ "$UV_HAVE" = "$UV_VERSION" ]; then
+uv_too_old() { [ -z "$UV_HAVE" ] || { [ "$(printf '%s\n%s\n' "$UV_MIN_VERSION" "$UV_HAVE" | sort -V | head -1)" = "$UV_HAVE" ] && [ "$UV_HAVE" != "$UV_MIN_VERSION" ]; }; }
+if [ "$UV_VERSION" = "latest" ] && ! uv_too_old; then
+    log "[OK] uv $UV_HAVE"
+elif [ "$UV_VERSION" = "latest" ] && [ "$OFFLINE" -eq 0 ]; then
+    log "Installing uv latest (found: ${UV_HAVE:-none}, minimum $UV_MIN_VERSION)..."
+    curl -LsSf https://astral.sh/uv/install.sh | sh
+    hash -r
+    log "[OK] uv $(uv --version 2>/dev/null | awk '{print $2}')"
+elif [ "$UV_VERSION" != "latest" ] && [ "$UV_HAVE" = "$UV_VERSION" ]; then
     log "[OK] uv $UV_VERSION"
 elif [ "$OFFLINE" -eq 1 ]; then
     [ -f "$WHEELHOUSE/uv" ] || { log "[ERROR] uv binary not found in $WHEELHOUSE"; offline_manifest; exit 1; }
@@ -272,6 +282,19 @@ if [ -d "$INSTALL_DIR/venv" ] && [ "$(cat "$INSTALL_DIR/venv/.db-edition" 2>/dev
    && [ -f "$INSTALL_DIR/venv/.db-edition" ]; then
     echo " 別 edition の venv を検出しました。作り直します..."
     rm -rf "$INSTALL_DIR/venv"
+fi
+# 既存 venv の Python が指定版と違えば作り直す (= PYTHON_VER を上げた更新で、古い interpreter のまま新エンジンを入れない)。
+# offline は host に python$PYTHON_VER が無いことがあるので作り直さず警告だけ
+if [ -d "$INSTALL_DIR/venv" ]; then
+    VENV_PY="$("$INSTALL_DIR/venv/bin/python" -c 'import sys; print(f"{sys.version_info[0]}.{sys.version_info[1]}")' 2>/dev/null || true)"
+    if [ "$VENV_PY" != "$PYTHON_VER" ]; then
+        if [ "$OFFLINE" -eq 1 ]; then
+            log "[WARN] venv Python ${VENV_PY:-unknown} differs from $PYTHON_VER (kept: offline)"
+        else
+            log "[WARN] venv Python ${VENV_PY:-unknown} differs from $PYTHON_VER. Recreating venv..."
+            rm -rf "$INSTALL_DIR/venv"
+        fi
+    fi
 fi
 # offline では interpreter を download できないので system の python$PYTHON_VER 必須 (--no-python-downloads で明示的に落とす)
 VENV_ARGS=(--python "$PYTHON_VER")
