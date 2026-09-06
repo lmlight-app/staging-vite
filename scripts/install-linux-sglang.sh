@@ -300,7 +300,15 @@ fi
 VENV_ARGS=(--python "$PYTHON_VER")
 [ "$OFFLINE" -eq 1 ] && VENV_ARGS+=(--no-python-downloads)
 if [ ! -d "$INSTALL_DIR/venv" ]; then
-    uv venv "${VENV_ARGS[@]}" "$INSTALL_DIR/venv"
+    # 古い uv が python$PYTHON_VER を取れない (= 配布一覧に無い) ときは uv を最新へ上げて 1 回だけやり直す (online のみ)
+    if ! uv venv "${VENV_ARGS[@]}" "$INSTALL_DIR/venv"; then
+        [ "$OFFLINE" -eq 0 ] || { log "[ERROR] Could not create venv with python$PYTHON_VER (offline: install it on this host)"; exit 1; }
+        log "[WARN] uv $(uv --version 2>/dev/null | awk '{print $2}') could not set up python$PYTHON_VER. Upgrading uv to latest and retrying..."
+        curl -LsSf https://astral.sh/uv/install.sh | sh
+        hash -r
+        rm -rf "$INSTALL_DIR/venv"
+        uv venv "${VENV_ARGS[@]}" "$INSTALL_DIR/venv" || { log "[ERROR] Could not create venv with python$PYTHON_VER"; exit 1; }
+    fi
 fi
 echo "sglang" > "$INSTALL_DIR/venv/.db-edition"
 
