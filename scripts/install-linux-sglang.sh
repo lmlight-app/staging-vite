@@ -29,12 +29,12 @@ SGLANG_VERSION="${DB_SGLANG_VERSION:-}"
 UV_VERSION="${DB_UV_VERSION:-}"
 TORCH_INDEX="${DB_TORCH_INDEX:-}"
 # latest.json に *_version が無いときの最後の砦 (= engine-versions.env と同じ値。毎回 `uv self update` はしない)
-SGLANG_VERSION_DEFAULT="0.5.18"
+SGLANG_VERSION_DEFAULT="latest"
 UV_VERSION_DEFAULT="0.12.1"
 usage() {
     cat << 'USAGE'
 Usage: install-linux-sglang.sh [--sglang-version X.Y.Z] [--uv-version X.Y.Z] [--torch-index URL] [--offline --wheelhouse DIR]
-  --sglang-version  pin SGLang        (default: "sglang_version" in latest.json; env DB_SGLANG_VERSION)
+  --sglang-version  SGLang: latest | X.Y.Z        (default: "sglang_version" in latest.json; env DB_SGLANG_VERSION)
   --uv-version    pin uv           (default: "uv_version" in latest.json; env DB_UV_VERSION)
   --torch-index   PyTorch wheel index URL (default: "torch_index" in latest.json; empty = uv --torch-backend=auto)
   --offline       no network: binary / checksum / uv / wheels are taken from --wheelhouse DIR
@@ -45,7 +45,7 @@ while [ $# -gt 0 ]; do
     case "$1" in
         --offline) OFFLINE=1 ;;
         --wheelhouse) WHEELHOUSE="${2:?--wheelhouse requires DIR}"; shift ;;
-        --sglang-version) SGLANG_VERSION="${2:?--sglang-version requires X.Y.Z}"; shift ;;
+        --sglang-version) SGLANG_VERSION="${2:?--sglang-version requires latest|nightly|X.Y.Z}"; shift ;;
         --uv-version) UV_VERSION="${2:?--uv-version requires X.Y.Z}"; shift ;;
         --torch-index) TORCH_INDEX="${2:?--torch-index requires URL}"; shift ;;
         -h|--help) usage; exit 0 ;;
@@ -144,7 +144,7 @@ install_binary() {
 }
 
 
-# ── 版マニフェスト latest.json → 固定版を解決 (= 新規も再実行も同じ版になる。無ければ同梱既定へ = 「たまたま最新」は入れない) ──
+# ── 版マニフェスト latest.json → 版指定を解決 (latest | nightly | X.Y.Z。無ければ同梱既定 latest) ──
 if [ "$OFFLINE" -eq 1 ]; then
     MANIFEST_FILE="$WHEELHOUSE/latest.json"
 else
@@ -161,7 +161,7 @@ if [ -z "$UV_VERSION" ]; then
     UV_VERSION="$UV_VERSION_DEFAULT"
 fi
 if [ -z "$SGLANG_VERSION" ]; then
-    log "[WARN] latest.json has no \"sglang_version\"; using bundled default SGLang $SGLANG_VERSION_DEFAULT (override: --sglang-version X.Y.Z)"
+    log "[WARN] latest.json has no \"sglang_version\"; using bundled default SGLang $SGLANG_VERSION_DEFAULT (override: --sglang-version latest|nightly|X.Y.Z)"
     SGLANG_VERSION="$SGLANG_VERSION_DEFAULT"
 fi
 log "[UPDATE] target: app $(manifest_get version), SGLang $SGLANG_VERSION, uv $UV_VERSION, torch index ${TORCH_INDEX:-auto}"
@@ -281,7 +281,7 @@ if [ ! -d "$INSTALL_DIR/venv" ]; then
 fi
 echo "sglang" > "$INSTALL_DIR/venv/.db-edition"
 
-# SGLang: latest.json の sglang_version に固定 (= 新規も再実行も同じ版。再実行は pin へ upgrade / downgrade される)。
+# SGLang: latest.json の sglang_version (latest | nightly | X.Y.Z) に従って install する。既定 latest。
 # torch index は torch_index があれば --extra-index-url、無ければ uv の --torch-backend=auto (CUDA ドライバ版から自動選択)。
 # offline は wheelhouse の wheel だけで解決する (--no-index)。
 PIP_ARGS=(--python "$INSTALL_DIR/venv/bin/python")
@@ -292,7 +292,15 @@ elif [ -n "$TORCH_INDEX" ]; then
 else
     PIP_ARGS+=(--torch-backend=auto)
 fi
-install_engine() { uv pip install "${PIP_ARGS[@]}" "sglang[all]==$SGLANG_VERSION"; }
+# 版指定: latest = PyPI 最新へ upgrade / X.Y.Z = 固定 (再実行は pin へ upgrade / downgrade)。SGLang に nightly index は無いので latest 扱い
+[ "$SGLANG_VERSION" = "nightly" ] && { log "[WARN] SGLang has no nightly channel; installing latest instead"; SGLANG_VERSION=latest; }
+install_engine() {
+    case "$SGLANG_VERSION" in
+        latest) uv pip install -U "${PIP_ARGS[@]}" "sglang[all]" ;;
+        *)      uv pip install "${PIP_ARGS[@]}" "sglang[all]==$SGLANG_VERSION" ;;
+    esac
+}
+echo "$SGLANG_VERSION" > "$INSTALL_DIR/venv/.db-engine-spec"
 log "Installing SGLang $SGLANG_VERSION..."
 install_engine
 # 他 edition の残骸が import を壊すことがあるため、検証して駄目なら venv を作り直して入れ直す。
@@ -304,10 +312,17 @@ if ! "$INSTALL_DIR/venv/bin/python" -c "import sglang" >/dev/null 2>&1; then
     install_engine
 fi
 SGLANG_INSTALLED="$("$INSTALL_DIR/venv/bin/python" -c "import importlib.metadata as m; print(m.version('sglang'))" 2>/dev/null || true)"
-if [ "$SGLANG_INSTALLED" != "$SGLANG_VERSION" ]; then
-    log "[ERROR] SGLang ${SGLANG_INSTALLED:-none} is installed, expected $SGLANG_VERSION"
+if [ -z "$SGLANG_INSTALLED" ]; then
+    log "[ERROR] SGLang is not importable after install"
     exit 1
 fi
+case "$SGLANG_VERSION" in
+    latest|nightly) ;;
+    *) if [ "$SGLANG_INSTALLED" != "$SGLANG_VERSION" ]; then
+           log "[ERROR] SGLang $SGLANG_INSTALLED is installed, expected $SGLANG_VERSION"
+           exit 1
+       fi ;;
+esac
 log "[OK] SGLang $SGLANG_INSTALLED"
 
 uv pip install "${PIP_ARGS[@]}" "openai-whisper>=20231117"
@@ -437,10 +452,13 @@ if [ -f .update-running ] && [ ! -f .update-requested ]; then
 fi
 if [ -f .update-requested ]; then
     UPDATE_URL=$(head -1 .update-requested)
+    # 2 行目 (任意) = 推論エンジンの版指定 (latest | nightly | X.Y.Z)。admin > モデル管理 の「版を変更」が書く
+    ENGINE_SPEC=$(sed -n 2p .update-requested)
     rm -f .update-requested
     touch .update-running
     # installer に自分の設置 dir を教える (= $HOME/.local/db 以外の設置でも同じ dir を更新する)
     DB_INSTALL_DIR="$(pwd -P)"; export DB_INSTALL_DIR
+    if [ -n "$ENGINE_SPEC" ]; then DB_VLLM_VERSION="$ENGINE_SPEC"; DB_SGLANG_VERSION="$ENGINE_SPEC"; export DB_VLLM_VERSION DB_SGLANG_VERSION; fi
     echo "$(_ts) [UPDATE] running installer: $UPDATE_URL" >> update.log
     echo "[UPDATE] running installer: $UPDATE_URL"
     RC=1
