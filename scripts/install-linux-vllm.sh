@@ -339,6 +339,22 @@ case "$VLLM_VERSION" in
 esac
 log "[OK] vLLM $VLLM_INSTALLED"
 
+# FlashInfer の prebuilt カーネル (flashinfer-jit-cache) が、入った torch の CUDA build 向けに配布されていれば入れる。
+# 無ければ何もしない (= JIT は nvcc 必須。nvcc も無い機では本体が起動時にサンプラーを torch 実装へ自動で切替える)。
+# torch の選び方 (auto) は変えない。prebuilt が新しい CUDA 向けに出れば次の再構築で自動的に拾う
+if [ "$OFFLINE" -eq 0 ]; then
+    TORCH_CUDA="$("$VENV_NEW/bin/python" -c "import torch; print((torch.version.cuda or '').replace('.', ''))" 2>/dev/null || true)"
+    FI_VER="$("$VENV_NEW/bin/python" -c "import importlib.metadata as m; print(m.version('flashinfer-python'))" 2>/dev/null || true)"
+    if [ -n "$TORCH_CUDA" ] && [ -n "$FI_VER" ]; then
+        if uv pip install --python "$VENV_NEW/bin/python" --index-url "https://flashinfer.ai/whl/cu${TORCH_CUDA}/" \
+               "flashinfer-jit-cache==$FI_VER" >/dev/null 2>&1; then
+            log "[OK] FlashInfer prebuilt kernels (flashinfer-jit-cache $FI_VER, cu${TORCH_CUDA})"
+        else
+            log "[INFO] No prebuilt FlashInfer kernels for cu${TORCH_CUDA} (FlashInfer $FI_VER): kernels are JIT-compiled (needs nvcc), otherwise the torch sampler is used"
+        fi
+    fi
+fi
+
 # 入れ替え: binary と venv をここでまとめて (稼働中プロセスは先に止めてある)。
 # api → api.prev / venv → venv.prev、api.new → api / venv.new → venv
 install_binary
