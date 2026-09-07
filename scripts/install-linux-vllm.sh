@@ -271,46 +271,30 @@ else
 fi
 [ "$DEPS_OK" -eq 1 ] || echo "[WARN] 一部の system 依存 (python3-dev / ffmpeg / tesseract-ocr / ninja-build) を入れられませんでした。機能が失敗する場合は README を参照し手動導入してください。"
 
-# edition 切替は venv を無条件に作り直す (残った依存が実行時に壊れるため import 検証では不十分)。
-# venv 作成時に edition marker を書き、違う edition なら丸ごと作り直す
-if [ -d "$INSTALL_DIR/venv" ] && [ "$(cat "$INSTALL_DIR/venv/.db-edition" 2>/dev/null)" != "vllm" ] \
-   && [ -f "$INSTALL_DIR/venv/.db-edition" ]; then
-    echo " 別 edition の venv を検出しました。作り直します..."
-    rm -rf "$INSTALL_DIR/venv"
-fi
-# 既存 venv の Python が指定版と違えば作り直す (= PYTHON_VER を上げた更新で、古い interpreter のまま新エンジンを入れない)。
-# offline は host に python$PYTHON_VER が無いことがあるので作り直さず警告だけ
-if [ -d "$INSTALL_DIR/venv" ]; then
-    VENV_PY="$("$INSTALL_DIR/venv/bin/python" -c 'import sys; print(f"{sys.version_info[0]}.{sys.version_info[1]}")' 2>/dev/null || true)"
-    if [ "$VENV_PY" != "$PYTHON_VER" ]; then
-        if [ "$OFFLINE" -eq 1 ]; then
-            log "[WARN] venv Python ${VENV_PY:-unknown} differs from $PYTHON_VER (kept: offline)"
-        else
-            log "[WARN] venv Python ${VENV_PY:-unknown} differs from $PYTHON_VER. Recreating venv..."
-            rm -rf "$INSTALL_DIR/venv"
-        fi
-    fi
-fi
+# ── Python venv は不変 (immutable): 毎回 venv.new を空から作って install し、検証が通ったら venv と入れ替える。
+# 旧 venv は venv.prev に残し `db rollback` で binary と一緒に戻せる。長生き venv への上書き更新はしない
+# (= 「版は満たすが CUDA build が違う」残骸が構造的に出ない)。wheel は uv cache に残すので 2 回目以降は速い ──
+VENV="$INSTALL_DIR/venv"; VENV_NEW="$INSTALL_DIR/venv.new"; VENV_PREV="$INSTALL_DIR/venv.prev"
+rm -rf "$VENV_NEW"
 # offline では interpreter を download できないので system の python$PYTHON_VER 必須 (--no-python-downloads で明示的に落とす)
 VENV_ARGS=(--python "$PYTHON_VER")
 [ "$OFFLINE" -eq 1 ] && VENV_ARGS+=(--no-python-downloads)
-if [ ! -d "$INSTALL_DIR/venv" ]; then
-    # 古い uv が python$PYTHON_VER を取れない (= 配布一覧に無い) ときは uv を最新へ上げて 1 回だけやり直す (online のみ)
-    if ! uv venv "${VENV_ARGS[@]}" "$INSTALL_DIR/venv"; then
-        [ "$OFFLINE" -eq 0 ] || { log "[ERROR] Could not create venv with python$PYTHON_VER (offline: install it on this host)"; exit 1; }
-        log "[WARN] uv $(uv --version 2>/dev/null | awk '{print $2}') could not set up python$PYTHON_VER. Upgrading uv to latest and retrying..."
-        curl -LsSf https://astral.sh/uv/install.sh | sh
-        hash -r
-        rm -rf "$INSTALL_DIR/venv"
-        uv venv "${VENV_ARGS[@]}" "$INSTALL_DIR/venv" || { log "[ERROR] Could not create venv with python$PYTHON_VER"; exit 1; }
-    fi
+# 古い uv が python$PYTHON_VER を取れない (= 配布一覧に無い) ときは uv を最新へ上げて 1 回だけやり直す (online のみ)
+if ! uv venv "${VENV_ARGS[@]}" "$VENV_NEW"; then
+    [ "$OFFLINE" -eq 0 ] || { log "[ERROR] Could not create venv with python$PYTHON_VER (offline: install it on this host)"; exit 1; }
+    log "[WARN] uv $(uv --version 2>/dev/null | awk '{print $2}') could not set up python$PYTHON_VER. Upgrading uv to latest and retrying..."
+    curl -LsSf https://astral.sh/uv/install.sh | sh
+    hash -r
+    rm -rf "$VENV_NEW"
+    uv venv "${VENV_ARGS[@]}" "$VENV_NEW" || { log "[ERROR] Could not create venv with python$PYTHON_VER"; exit 1; }
 fi
-echo "vllm" > "$INSTALL_DIR/venv/.db-edition"
+echo "vllm" > "$VENV_NEW/.db-edition"
+echo "$VLLM_VERSION" > "$VENV_NEW/.db-engine-spec"
 
 # vLLM: latest.json の vllm_version (latest | nightly | X.Y.Z) に従って install する。既定 latest。
 # torch index は torch_index があれば --extra-index-url、無ければ uv の --torch-backend=auto (CUDA ドライバ版から自動選択)。
-# offline は wheelhouse の wheel だけで解決する (--no-index)。
-PIP_ARGS=(--python "$INSTALL_DIR/venv/bin/python")
+# offline は wheelhouse の wheel だけで解決する (--no-index)。空の venv に入れるので torch 一族は常に同じ解決で揃う
+PIP_ARGS=(--python "$VENV_NEW/bin/python")
 if [ "$OFFLINE" -eq 1 ]; then
     PIP_ARGS+=(--no-index --find-links "$WHEELHOUSE")
 elif [ -n "$TORCH_INDEX" ]; then
@@ -318,44 +302,40 @@ elif [ -n "$TORCH_INDEX" ]; then
 else
     PIP_ARGS+=(--torch-backend=auto)
 fi
-# 版指定: latest = PyPI 最新へ upgrade / nightly = wheels.vllm.ai の pre-release / X.Y.Z = 固定 (再実行は pin へ upgrade / downgrade)
-# torch 一族 (torchvision / torchaudio) は engine と同じ 1 回の解決に入れて CUDA build を揃える
-# (= `-U vllm` だけだと torch は上がるのに旧 CUDA 版の torchaudio が「版は満たす」ので残り、import で CUDA 版不一致になる)
-TORCH_FAMILY=(--reinstall-package torchvision --reinstall-package torchaudio torchvision torchaudio)
 install_engine() {
     case "$VLLM_VERSION" in
-        latest)  uv pip install -U "${PIP_ARGS[@]}" "vllm" "${TORCH_FAMILY[@]}" ;;
+        latest)  uv pip install -U "${PIP_ARGS[@]}" "vllm" ;;
         nightly) uv pip install -U --prerelease=allow --index-strategy unsafe-best-match "${PIP_ARGS[@]}" \
-                     --extra-index-url https://wheels.vllm.ai/nightly "vllm" "${TORCH_FAMILY[@]}" ;;
-        *)       uv pip install "${PIP_ARGS[@]}" "vllm==$VLLM_VERSION" "${TORCH_FAMILY[@]}" ;;
+                     --extra-index-url https://wheels.vllm.ai/nightly "vllm" ;;
+        *)       uv pip install "${PIP_ARGS[@]}" "vllm==$VLLM_VERSION" ;;
     esac
 }
-echo "$VLLM_VERSION" > "$INSTALL_DIR/venv/.db-engine-spec"
+# 失敗したら venv.new を捨てて終了 (= 稼働中の venv には触らない)
+venv_fail() { log "[ERROR] $1 (existing venv left untouched)"; rm -rf "$VENV_NEW"; exit 1; }
 log "Installing vLLM $VLLM_VERSION..."
-install_engine
-# 他 edition の残骸が import を壊すことがあるため、検証して駄目なら venv を作り直して入れ直す。
-if ! "$INSTALL_DIR/venv/bin/python" -c "import vllm, torchaudio" >/dev/null 2>&1; then
-    log "[WARN] vllm import failed (leftovers from another edition). Recreating venv..."
-    rm -rf "$INSTALL_DIR/venv"
-    uv venv "${VENV_ARGS[@]}" "$INSTALL_DIR/venv"
-    echo "vllm" > "$INSTALL_DIR/venv/.db-edition"
-    install_engine
+install_engine || venv_fail "vLLM install failed"
+uv pip install "${PIP_ARGS[@]}" "openai-whisper>=20231117" || venv_fail "whisper install failed"
+
+# torchaudio は transformers が import 時に読むが、当製品では音声入力モデル以外に不要。torch と CUDA build が合わない wheel
+# しか取れなかった (= index に同 build が無い) ときは外して先へ進む (エンジンは動く、音声入力モデルだけ使えない)
+if ! "$VENV_NEW/bin/python" -c "import torchaudio" >/dev/null 2>&1; then
+    log "[WARN] torchaudio is unusable (CUDA build mismatch with torch); removing it. Audio-input models will not be available."
+    uv pip uninstall --python "$VENV_NEW/bin/python" torchaudio >/dev/null 2>&1 || true
 fi
-VLLM_INSTALLED="$("$INSTALL_DIR/venv/bin/python" -c "import importlib.metadata as m; print(m.version('vllm'))" 2>/dev/null || true)"
-if [ -z "$VLLM_INSTALLED" ]; then
-    log "[ERROR] vLLM is not importable after install"
-    exit 1
-fi
+# 検証: import と、固定版なら版一致
+"$VENV_NEW/bin/python" -c "import vllm" >/dev/null 2>&1 || venv_fail "vllm is not importable after install"
+VLLM_INSTALLED="$("$VENV_NEW/bin/python" -c "import importlib.metadata as m; print(m.version('vllm'))" 2>/dev/null || true)"
 case "$VLLM_VERSION" in
     latest|nightly) ;;
-    *) if [ "$VLLM_INSTALLED" != "$VLLM_VERSION" ]; then
-           log "[ERROR] vLLM $VLLM_INSTALLED is installed, expected $VLLM_VERSION"
-           exit 1
-       fi ;;
+    *) [ "$VLLM_INSTALLED" = "$VLLM_VERSION" ] || venv_fail "vLLM $VLLM_INSTALLED is installed, expected $VLLM_VERSION" ;;
 esac
 log "[OK] vLLM $VLLM_INSTALLED"
 
-uv pip install "${PIP_ARGS[@]}" "openai-whisper>=20231117"
+# 入れ替え: venv → venv.prev、venv.new → venv (稼働中プロセスは先に止めてある)
+rm -rf "$VENV_PREV"
+[ -d "$VENV" ] && mv "$VENV" "$VENV_PREV"
+mv "$VENV_NEW" "$VENV"
+log "[OK] venv swapped (previous kept as venv.prev for 'db rollback')"
 
 # offline: 事前に固めたモデルキャッシュがあれば展開 (= 初回起動の HuggingFace download を不要にする)
 if [ "$OFFLINE" -eq 1 ] && [ -f "$WHEELHOUSE/hf-cache.tar" ]; then
@@ -364,9 +344,8 @@ if [ "$OFFLINE" -eq 1 ] && [ -f "$WHEELHOUSE/hf-cache.tar" ]; then
     log "[OK] model cache extracted to $HF_DIR"
 fi
 
-# install 完了後は wheel cache を掃除 (vllm/torch 系で数GB残るため。モデルの
-# キャッシュ (HF) は runtime が読むので消さない)
-uv cache clean >/dev/null 2>&1 || true
+# wheel cache は次回の venv 再構築で使うので残す。参照されなくなった分だけ掃除 (モデルの HF cache は runtime が読むので触らない)
+uv cache prune >/dev/null 2>&1 || true
 
 echo "[OK] Python venv ready"
 
@@ -662,7 +641,7 @@ DB_HOME="\${DB_HOME:-$INSTALL_DIR}"
 EOF
 cat >> "$INSTALL_DIR/db" << 'EOF'
 _ts() { date -u +%Y-%m-%dT%H:%M:%SZ; }
-# 直前の binary (api.prev、installer が更新時に退避) と入れ替える。もう一度実行すると元に戻る。
+# 直前の binary (api.prev) と venv (venv.prev、どちらも installer が更新時に退避) と入れ替える。もう一度実行すると元に戻る。
 # update.log / .update-result にも記録 (= admin の update/status に出る)
 rollback_binary() {
     if [ ! -f "$DB_HOME/api.prev" ]; then
@@ -671,6 +650,14 @@ rollback_binary() {
     mv -f "$DB_HOME/api" "$DB_HOME/api.rollback" \
         && mv -f "$DB_HOME/api.prev" "$DB_HOME/api" \
         && mv -f "$DB_HOME/api.rollback" "$DB_HOME/api.prev" || return 1
+    # venv も一緒に戻す (installer が venv.prev に退避)。無ければ binary だけ
+    if [ -d "$DB_HOME/venv.prev" ]; then
+        mv "$DB_HOME/venv" "$DB_HOME/venv.rollback" \
+            && mv "$DB_HOME/venv.prev" "$DB_HOME/venv" \
+            && mv "$DB_HOME/venv.rollback" "$DB_HOME/venv.prev" \
+            && echo "$(_ts) [ROLLBACK] venv <-> venv.prev swapped" >> "$DB_HOME/update.log" \
+            || echo "[WARN] venv rollback failed (binary rolled back)"
+    fi
     rm -f "$DB_HOME/.update-requested"
     printf 'result=rolled_back\nexit_code=0\nfinished_at=%s\n' "$(_ts)" > "$DB_HOME/.update-result"
     echo "$(_ts) [ROLLBACK] api <-> api.prev swapped" >> "$DB_HOME/update.log"
