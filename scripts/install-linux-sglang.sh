@@ -64,7 +64,7 @@ Pre-stage the following files in ${WHEELHOUSE:-<wheelhouse DIR>} (fetch on an on
   $BINARY_NAME.sha256      checksum            $BASE_URL/$BINARY_NAME.sha256
   latest.json              version manifest    $BASE_URL/latest.json   (optional if --sglang-version is given)
   uv                       uv binary $UV_VERSION  https://github.com/astral-sh/uv/releases (uv-<arch>-unknown-linux-gnu.tar.gz, extract 'uv')
-  *.whl                    wheels:  pip download "sglang==${SGLANG_VERSION:-<version>}" "openai-whisper>=20231117" --dest . [--extra-index-url <torch index>]
+  *.whl                    wheels:  pip download "sglang==${SGLANG_VERSION:-<version>}" --dest . [--extra-index-url <torch index>]
   hf-cache.tar             (optional) tar of ~/.cache/huggingface holding the models to serve
   python$PYTHON_VER               must already be installed on this host (uv cannot download interpreters offline)
 EOF
@@ -213,7 +213,7 @@ fi
 verify_sha256 "$INSTALL_DIR/api.new" "$SHA_SRC"
 install_binary
 
-# Python venv for SGLang + whisper (separate from PyInstaller binary)。
+# Python venv for SGLang (separate from PyInstaller binary。文字起こしは binary 同梱の pywhispercpp で、venv の whisper は読まれない)。
 # venv は edition 共有: 旧 edition の残骸 (vllm 等) が入っていても resolver が
 # torch 等の共有依存を sglang の要求に揃える (残骸は未使用なので害なし)
 echo "Setting up Python environment for SGLang..."
@@ -319,7 +319,6 @@ install_engine() {
 venv_fail() { log "[ERROR] $1 (existing venv left untouched)"; rm -rf "$VENV_NEW"; exit 1; }
 log "Installing SGLang $SGLANG_VERSION..."
 install_engine || venv_fail "SGLang install failed"
-uv pip install "${PIP_ARGS[@]}" "openai-whisper>=20231117" || venv_fail "whisper install failed"
 
 # torchaudio は transformers が import 時に読むが、当製品では音声入力モデル以外に不要。torch と CUDA build が合わない wheel
 # しか取れなかった (= index に同 build が無い) ときは外して先へ進む (エンジンは動く、音声入力モデルだけ使えない)
