@@ -325,17 +325,20 @@ else
 fi
 # 版指定: latest = PyPI 最新へ upgrade / X.Y.Z = 固定 (再実行は pin へ upgrade / downgrade)。SGLang に nightly index は無いので latest 扱い
 [ "$SGLANG_VERSION" = "nightly" ] && { log "[WARN] SGLang has no nightly channel; installing latest instead"; SGLANG_VERSION=latest; }
+# torch 一族 (torchvision / torchaudio) は engine と同じ 1 回の解決に入れて CUDA build を揃える
+# (= `-U` だけだと torch は上がるのに旧 CUDA 版の torchaudio が「版は満たす」ので残り、import で CUDA 版不一致になる)
+TORCH_FAMILY=(--reinstall-package torchvision --reinstall-package torchaudio torchvision torchaudio)
 install_engine() {
     case "$SGLANG_VERSION" in
-        latest) uv pip install -U "${PIP_ARGS[@]}" "sglang[all]" ;;
-        *)      uv pip install "${PIP_ARGS[@]}" "sglang[all]==$SGLANG_VERSION" ;;
+        latest) uv pip install -U "${PIP_ARGS[@]}" "sglang[all]" "${TORCH_FAMILY[@]}" ;;
+        *)      uv pip install "${PIP_ARGS[@]}" "sglang[all]==$SGLANG_VERSION" "${TORCH_FAMILY[@]}" ;;
     esac
 }
 echo "$SGLANG_VERSION" > "$INSTALL_DIR/venv/.db-engine-spec"
 log "Installing SGLang $SGLANG_VERSION..."
 install_engine
 # 他 edition の残骸が import を壊すことがあるため、検証して駄目なら venv を作り直して入れ直す。
-if ! "$INSTALL_DIR/venv/bin/python" -c "import sglang" >/dev/null 2>&1; then
+if ! "$INSTALL_DIR/venv/bin/python" -c "import sglang, torchaudio" >/dev/null 2>&1; then
     log "[WARN] sglang import failed (leftovers from another edition). Recreating venv..."
     rm -rf "$INSTALL_DIR/venv"
     uv venv "${VENV_ARGS[@]}" "$INSTALL_DIR/venv"

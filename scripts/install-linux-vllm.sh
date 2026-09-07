@@ -319,19 +319,22 @@ else
     PIP_ARGS+=(--torch-backend=auto)
 fi
 # 版指定: latest = PyPI 最新へ upgrade / nightly = wheels.vllm.ai の pre-release / X.Y.Z = 固定 (再実行は pin へ upgrade / downgrade)
+# torch 一族 (torchvision / torchaudio) は engine と同じ 1 回の解決に入れて CUDA build を揃える
+# (= `-U vllm` だけだと torch は上がるのに旧 CUDA 版の torchaudio が「版は満たす」ので残り、import で CUDA 版不一致になる)
+TORCH_FAMILY=(--reinstall-package torchvision --reinstall-package torchaudio torchvision torchaudio)
 install_engine() {
     case "$VLLM_VERSION" in
-        latest)  uv pip install -U "${PIP_ARGS[@]}" "vllm" ;;
+        latest)  uv pip install -U "${PIP_ARGS[@]}" "vllm" "${TORCH_FAMILY[@]}" ;;
         nightly) uv pip install -U --prerelease=allow --index-strategy unsafe-best-match "${PIP_ARGS[@]}" \
-                     --extra-index-url https://wheels.vllm.ai/nightly "vllm" ;;
-        *)       uv pip install "${PIP_ARGS[@]}" "vllm==$VLLM_VERSION" ;;
+                     --extra-index-url https://wheels.vllm.ai/nightly "vllm" "${TORCH_FAMILY[@]}" ;;
+        *)       uv pip install "${PIP_ARGS[@]}" "vllm==$VLLM_VERSION" "${TORCH_FAMILY[@]}" ;;
     esac
 }
 echo "$VLLM_VERSION" > "$INSTALL_DIR/venv/.db-engine-spec"
 log "Installing vLLM $VLLM_VERSION..."
 install_engine
 # 他 edition の残骸が import を壊すことがあるため、検証して駄目なら venv を作り直して入れ直す。
-if ! "$INSTALL_DIR/venv/bin/python" -c "import vllm" >/dev/null 2>&1; then
+if ! "$INSTALL_DIR/venv/bin/python" -c "import vllm, torchaudio" >/dev/null 2>&1; then
     log "[WARN] vllm import failed (leftovers from another edition). Recreating venv..."
     rm -rf "$INSTALL_DIR/venv"
     uv venv "${VENV_ARGS[@]}" "$INSTALL_DIR/venv"
