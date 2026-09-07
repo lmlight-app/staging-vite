@@ -211,7 +211,8 @@ if [ ! -s "$INSTALL_DIR/api.new" ] || ! head -c 4 "$INSTALL_DIR/api.new" | grep 
     exit 1
 fi
 verify_sha256 "$INSTALL_DIR/api.new" "$SHA_SRC"
-install_binary
+# binary の入れ替えは venv の検証が通った後に venv と一緒に行う (= 途中失敗で「新 binary + 旧 venv」の混在を作らない。
+# api.prev / venv.prev は常に同じ世代の対になり、db rollback が両方まとめて戻せる)
 
 # Python venv for SGLang (separate from PyInstaller binary。文字起こしは binary 同梱の pywhispercpp で、venv の whisper は読まれない)。
 # venv は edition 共有: 旧 edition の残骸 (vllm 等) が入っていても resolver が
@@ -280,7 +281,15 @@ fi
 # 旧 venv は venv.prev に残し `db rollback` で binary と一緒に戻せる。長生き venv への上書き更新はしない
 # (= 「版は満たすが CUDA build が違う」残骸が構造的に出ない)。wheel は uv cache に残すので 2 回目以降は速い ──
 VENV="$INSTALL_DIR/venv"; VENV_NEW="$INSTALL_DIR/venv.new"; VENV_PREV="$INSTALL_DIR/venv.prev"
-rm -rf "$VENV_NEW"
+rm -rf "$VENV_NEW" "$INSTALL_DIR/venv.rollback"
+# 空き容量: venv 1 世代 (torch + engine で 10GB 前後) + wheel cache を新たに置くので、足りなければ手を付ける前に止める
+MIN_FREE_GB="${DB_MIN_FREE_GB:-15}"
+FREE_GB="$(df -Pk "$INSTALL_DIR" 2>/dev/null | awk 'NR==2 {printf "%d", $4/1024/1024}')"
+if [ -n "$FREE_GB" ] && [ "$FREE_GB" -lt "$MIN_FREE_GB" ]; then
+    rm -f "$INSTALL_DIR/api.new"
+    log "[ERROR] Not enough free disk space in $INSTALL_DIR: ${FREE_GB}GB free, ${MIN_FREE_GB}GB required (override: DB_MIN_FREE_GB)"
+    exit 1
+fi
 # offline では interpreter を download できないので system の python$PYTHON_VER 必須 (--no-python-downloads で明示的に落とす)
 VENV_ARGS=(--python "$PYTHON_VER")
 [ "$OFFLINE" -eq 1 ] && VENV_ARGS+=(--no-python-downloads)
@@ -316,7 +325,7 @@ install_engine() {
     esac
 }
 # 失敗したら venv.new を捨てて終了 (= 稼働中の venv には触らない)
-venv_fail() { log "[ERROR] $1 (existing venv left untouched)"; rm -rf "$VENV_NEW"; exit 1; }
+venv_fail() { log "[ERROR] $1 (nothing was changed: current binary and venv keep running)"; rm -rf "$VENV_NEW" "$INSTALL_DIR/api.new"; exit 1; }
 log "Installing SGLang $SGLANG_VERSION..."
 install_engine || venv_fail "SGLang install failed"
 
@@ -335,7 +344,9 @@ case "$SGLANG_VERSION" in
 esac
 log "[OK] SGLang $SGLANG_INSTALLED"
 
-# 入れ替え: venv → venv.prev、venv.new → venv (稼働中プロセスは先に止めてある)
+# 入れ替え: binary と venv をここでまとめて (稼働中プロセスは先に止めてある)。
+# api → api.prev / venv → venv.prev、api.new → api / venv.new → venv
+install_binary
 rm -rf "$VENV_PREV"
 [ -d "$VENV" ] && mv "$VENV" "$VENV_PREV"
 mv "$VENV_NEW" "$VENV"
