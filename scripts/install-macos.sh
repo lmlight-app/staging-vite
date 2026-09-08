@@ -4,6 +4,20 @@
 set -e
 
 BASE_URL="${DB_BASE_URL:-https://github.com/lmlight-app/dist_vite/releases/latest/download}"
+DB_VERSION="${DB_VERSION:-latest}"
+if [ "$DB_VERSION" != "latest" ] && [ -z "${DB_BASE_URL:-}" ]; then
+    RELEASE_TAG="$DB_VERSION"
+    case "$RELEASE_TAG" in
+        x*) ;;
+        *)
+            RAW_VERSION="20$(printf '%s' "$RELEASE_TAG" | sed -E 's/^([0-9]{2})\.([0-9]{4})/\1\2/')"
+            RELEASE_TAG="$(curl -fsSL "https://api.github.com/repos/lmlight-app/dist_vite/releases?per_page=100" 2>/dev/null \
+                | grep -o '"tag_name": *"x'"$RAW_VERSION"'\(-[a-z0-9]*\)\{0,1\}"' | head -1 | sed -E 's/.*"(x[^"]+)".*/\1/')"
+            [ -n "$RELEASE_TAG" ] || { echo "[ERROR] Version $DB_VERSION was not found in releases; pass the release tag instead (e.g. x20260908.2-linux)"; exit 1; }
+            ;;
+    esac
+    BASE_URL="https://github.com/lmlight-app/dist_vite/releases/download/$RELEASE_TAG"
+fi
 INSTALL_DIR="${DB_INSTALL_DIR:-$HOME/.local/db}"
 ARCH="$(uname -m)"
 case "$ARCH" in x86_64|amd64) ARCH="amd64" ;; aarch64|arm64) ARCH="arm64" ;; esac

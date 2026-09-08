@@ -25,10 +25,11 @@ UV_VERSION_DEFAULT="latest"
 UV_MIN_VERSION="0.12.1"
 usage() {
     cat << 'USAGE'
-Usage: install-linux-sglang.sh [--sglang-version X.Y.Z] [--uv-version X.Y.Z] [--torch-index URL] [--offline --wheelhouse DIR]
+Usage: install-linux-sglang.sh [--sglang-version X.Y.Z] [--uv-version X.Y.Z] [--torch-index URL] [--offline --wheelhouse DIR] [--version 26.0908.2]
   --sglang-version  SGLang: latest | X.Y.Z        (default: "sglang_version" in latest.json; env DB_SGLANG_VERSION)
   --uv-version    uv: latest | X.Y.Z             (default: "uv_version" in latest.json, else latest; env DB_UV_VERSION)
   --torch-index   PyTorch wheel index URL (default: "torch_index" in latest.json; empty = uv --torch-backend=auto)
+  --version       DigitalBase version to install: latest | 26.0908.2 | x20260908.2-linux (default: latest; env DB_VERSION)
   --offline       no network: binary / checksum / uv / wheels are taken from --wheelhouse DIR
   --wheelhouse    directory with the pre-staged files (env DB_WHEELHOUSE). See "Offline install" in README
 USAGE
@@ -36,6 +37,7 @@ USAGE
 while [ $# -gt 0 ]; do
     case "$1" in
         --offline) OFFLINE=1 ;;
+        --version) DB_VERSION="${2:?--version requires latest|26.0908.2|x20260908.2-linux}"; shift ;;
         --wheelhouse) WHEELHOUSE="${2:?--wheelhouse requires DIR}"; shift ;;
         --sglang-version) SGLANG_VERSION="${2:?--sglang-version requires latest|nightly|X.Y.Z}"; shift ;;
         --uv-version) UV_VERSION="${2:?--uv-version requires latest|X.Y.Z}"; shift ;;
@@ -45,6 +47,20 @@ while [ $# -gt 0 ]; do
     esac
     shift
 done
+DB_VERSION="${DB_VERSION:-latest}"
+if [ "$DB_VERSION" != "latest" ] && [ -z "${DB_BASE_URL:-}" ]; then
+    RELEASE_TAG="$DB_VERSION"
+    case "$RELEASE_TAG" in
+        x*) ;;
+        *)
+            RAW_VERSION="20$(printf '%s' "$RELEASE_TAG" | sed -E 's/^([0-9]{2})\.([0-9]{4})/\1\2/')"
+            RELEASE_TAG="$(curl -fsSL "https://api.github.com/repos/lmlight-app/dist_vite/releases?per_page=100" 2>/dev/null \
+                | grep -o '"tag_name": *"x'"$RAW_VERSION"'\(-[a-z0-9]*\)\{0,1\}"' | head -1 | sed -E 's/.*"(x[^"]+)".*/\1/')"
+            [ -n "$RELEASE_TAG" ] || { echo "[ERROR] Version $DB_VERSION was not found in releases; pass the release tag instead (e.g. x20260908.2-linux)"; exit 1; }
+            ;;
+    esac
+    BASE_URL="https://github.com/lmlight-app/dist_vite/releases/download/$RELEASE_TAG"
+fi
 
 offline_manifest() {
     cat << EOF
@@ -418,10 +434,12 @@ fi
 if [ -f .update-requested ]; then
     UPDATE_URL=$(head -1 .update-requested)
     ENGINE_SPEC=$(sed -n 2p .update-requested)
+    PRODUCT_VERSION=$(sed -n 3p .update-requested)
     rm -f .update-requested
     touch .update-running
     DB_INSTALL_DIR="$(pwd -P)"; export DB_INSTALL_DIR
     if [ -n "$ENGINE_SPEC" ]; then DB_VLLM_VERSION="$ENGINE_SPEC"; DB_SGLANG_VERSION="$ENGINE_SPEC"; export DB_VLLM_VERSION DB_SGLANG_VERSION; fi
+    if [ -n "$PRODUCT_VERSION" ]; then DB_VERSION="$PRODUCT_VERSION"; export DB_VERSION; fi
     echo "$(_ts) [UPDATE] running installer: $UPDATE_URL" >> update.log
     echo "[UPDATE] running installer: $UPDATE_URL"
     RC=1
