@@ -30,7 +30,7 @@ Usage: install-linux-vllm.sh [--vllm-version X.Y.Z] [--uv-version X.Y.Z] [--torc
   --vllm-version  vLLM: latest | nightly | X.Y.Z   (default: "vllm_version" in latest.json, else latest; env DB_VLLM_VERSION)
   --uv-version    uv: latest | X.Y.Z             (default: "uv_version" in latest.json, else latest; env DB_UV_VERSION)
   --torch-index   PyTorch wheel index URL (default: "torch_index" in latest.json; empty = uv --torch-backend=auto)
-  --version       DigitalBase version to install: latest | 26.0908.2 | x20260908.2-linux (default: latest; env DB_VERSION)
+  --version       DigitalBase version to install: latest | YY.MMDD[.N] | xYYYYMMDD[.N][-linux] (default: latest; env DB_VERSION)
   --offline       no network: binary / checksum / uv / wheels are taken from --wheelhouse DIR
   --wheelhouse    directory with the pre-staged files (env DB_WHEELHOUSE). See "Offline install" in README
 USAGE
@@ -38,7 +38,7 @@ USAGE
 while [ $# -gt 0 ]; do
     case "$1" in
         --offline) OFFLINE=1 ;;
-        --version) DB_VERSION="${2:?--version requires latest|26.0908.2|x20260908.2-linux}"; shift ;;
+        --version) DB_VERSION="${2:?--version requires latest|YY.MMDD[.N]|xYYYYMMDD[.N][-linux]}"; shift ;;
         --wheelhouse) WHEELHOUSE="${2:?--wheelhouse requires DIR}"; shift ;;
         --vllm-version) VLLM_VERSION="${2:?--vllm-version requires latest|nightly|X.Y.Z}"; shift ;;
         --uv-version) UV_VERSION="${2:?--uv-version requires latest|X.Y.Z}"; shift ;;
@@ -50,7 +50,7 @@ while [ $# -gt 0 ]; do
 done
 DB_VERSION="${DB_VERSION:-latest}"
 printf '%s' "$DB_VERSION" | grep -Eq '^(latest|[0-9]{2}\.[0-9]{4}(\.[0-9]+)?|x[0-9]{8}(\.[0-9]+)?(-[a-z0-9]+)?)$' \
-    || { echo "[ERROR] --version must be latest, a version like 26.0908.2, or a release tag like x20260908.2-linux"; exit 2; }
+    || { echo "[ERROR] --version must be latest, a version (YY.MMDD[.N]), or a release tag (xYYYYMMDD[.N][-linux])"; exit 2; }
 TARGET_VERSION=""
 if [ "$DB_VERSION" != "latest" ]; then
     [ "${OFFLINE:-0}" -eq 0 ] || { echo "[ERROR] --version cannot be combined with --offline (the wheelhouse decides the version)"; exit 2; }
@@ -64,7 +64,7 @@ if [ "$DB_VERSION" != "latest" ]; then
                     CANDIDATES="$(curl -fsSL "https://api.github.com/repos/lmlight-app/dist_vite/releases?per_page=100" 2>/dev/null \
                         | grep -o '"tag_name": *"x'"$RAW_VERSION"'\(-[a-z0-9]*\)\{0,1\}"' | sed -E 's/.*"(x[^"]+)".*/\1/')"
                     RELEASE_REF="$(printf '%s\n' "$CANDIDATES" | grep -m1 -- '-linux$' || printf '%s\n' "$CANDIDATES" | grep -m1 -v -- '-' || true)"
-                    [ -n "$RELEASE_REF" ] || { echo "[ERROR] Version $DB_VERSION was not found in releases; pass the release tag instead (e.g. x20260908.2-linux)"; exit 1; }
+                    [ -n "$RELEASE_REF" ] || { echo "[ERROR] Version $DB_VERSION was not found in releases; pass the release tag instead (xYYYYMMDD[.N][-linux])"; exit 1; }
                     ;;
             esac
             ;;
