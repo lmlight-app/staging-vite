@@ -1,33 +1,19 @@
-# AI Server インストーラー for Windows (Vite Edition)
-# 使い方: irm https://raw.githubusercontent.com/lmlight-app/staging-vite/main/scripts/install-windows.ps1 | iex
 
 $ErrorActionPreference = "Stop"
 
-# TLS 1.2 フォールバック (Windows PowerShell 5.1 は既定で TLS 1.0/1.1。aka.ms / api.github.com は TLS 1.2+ 必須)
 [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
 
 # ============================================================
-# 実行権限について
 # ============================================================
-# これは「本体インストール」(フェーズ2)。%LOCALAPPDATA%\db に入るため admin 不要。
-# 前提ソフト (PostgreSQL / pgvector / Ollama) の導入は別フェーズ:
-#   先に管理者 PowerShell で setup-windows.ps1 を実行する
-#   (= Linux の `apt install postgresql …-pgvector` / macOS の `brew install …` に相当)。
-# pgvector DLL 配置など admin が要る処理は setup-windows.ps1 側に集約済み。
 
-# 設定
 $BASE_URL = if ($env:DB_BASE_URL) { $env:DB_BASE_URL } else { "https://github.com/lmlight-app/dist_vite/releases/latest/download" }
 $INSTALL_DIR = if ($env:DB_INSTALL_DIR) { $env:DB_INSTALL_DIR } else { "$env:LOCALAPPDATA\db" }
-# Windows は x64 exe のみ配布。ARM64 Windows でも x64 エミュレーションで動く (推論は Ollama がネイティブ)。
-# ネイティブ ARM64 exe を出す時は DB_ARCH=arm64 で切替 (release.yml の build-backend-windows-arm64 参照)
 $ARCH = if ($env:DB_ARCH) { $env:DB_ARCH } else { "amd64" }
 
-# データベース設定: env (DB_USER/DB_PASSWORD/DB_NAME) で上書き可、既定 digitalbase。.env があればそちらを優先
 $DB_USER = if ($env:DB_USER) { $env:DB_USER } else { "digitalbase" }
 $DB_PASSWORD = if ($env:DB_PASSWORD) { $env:DB_PASSWORD } else { "digitalbase" }
 $DB_NAME = if ($env:DB_NAME) { $env:DB_NAME } else { "digitalbase" }
 
-# 既存 .env から DATABASE_URL を読み取り (アップデート時にカスタム設定を反映)
 if (Test-Path "$INSTALL_DIR\.env") {
     $dbUrlLine = Get-Content "$INSTALL_DIR\.env" | Where-Object { $_ -match "^DATABASE_URL=" } | Select-Object -First 1
     if ($dbUrlLine -match "^DATABASE_URL=postgresql://([^:]+):([^@]+)@[^/]+/([^?]+)") {
@@ -37,8 +23,6 @@ if (Test-Path "$INSTALL_DIR\.env") {
     }
 }
 
-# 出力ヘルパー。全 OS/スクリプトで ASCII タグ ([OK]/[WARN]/[ERROR]/[INFO]) + 色に統一
-# (CP932 コンソールで emoji が化けるため。日本語本文は CP932 で表示可)。
 function Write-Info { param($msg) Write-Host "[INFO] $msg" -ForegroundColor Blue }
 function Write-Success { param($msg) Write-Host "[OK] $msg" -ForegroundColor Green }
 function Write-Error { param($msg) Write-Host "[ERROR] $msg" -ForegroundColor Red; exit 1 }
@@ -46,15 +30,12 @@ function Write-Warn { param($msg) Write-Host "[WARN] $msg" -ForegroundColor Yell
 
 Write-Host "Installing AI Server for Windows ($ARCH) to $INSTALL_DIR..."
 
-# ディレクトリ作成
 New-Item -ItemType Directory -Force -Path "$INSTALL_DIR" | Out-Null
 New-Item -ItemType Directory -Force -Path "$INSTALL_DIR\logs" | Out-Null
 
-# 既存インストールチェック
 if (Test-Path "$INSTALL_DIR\api.exe") {
     Write-Info "既存のインストールを検出しました。アップデート中..."
 
-    # 既存プロセス停止
     Write-Info "既存のプロセスを停止中..."
     Get-Process -Name "api" -ErrorAction SilentlyContinue | Where-Object { $_.Path -like "*db*" } | Stop-Process -Force
     Start-Sleep -Seconds 2
@@ -62,7 +43,6 @@ if (Test-Path "$INSTALL_DIR\api.exe") {
 }
 
 # ============================================================
-# ステップ 1: バイナリダウンロード
 # ============================================================
 Write-Info "ステップ 1/5: バイナリをダウンロード中..."
 
@@ -72,15 +52,11 @@ Invoke-WebRequest -Uri "$BASE_URL/$BACKEND_FILE" -OutFile "$INSTALL_DIR\api.exe"
 Write-Success "バイナリをダウンロードしました"
 
 # ============================================================
-# ステップ 2: 依存関係チェック
 # ============================================================
 Write-Info "ステップ 2/5: 依存関係をチェック中..."
 
 $MISSING_DEPS = @()
 
-# psql が PATH に無くても C:\Program Files\PostgreSQL\<版>\bin を見つけて PATH に足す。
-# (= EDB インストーラは psql を PATH に追加しないことが多く、これが無いと PG 導入済でも
-#  「未検知」→ DB セットアップ skip で壊れる。pgvector 側と同じ glob で堅牢化)
 if (-not (Get-Command psql -ErrorAction SilentlyContinue)) {
     $pgRoot = Get-ChildItem "C:\Program Files\PostgreSQL" -Directory -ErrorAction SilentlyContinue |
         Where-Object { Test-Path "$($_.FullName)\bin\psql.exe" } |
@@ -89,7 +65,6 @@ if (-not (Get-Command psql -ErrorAction SilentlyContinue)) {
     if ($pgRoot) { $env:PATH = "$pgRoot\bin;$env:PATH" }
 }
 
-# PostgreSQL チェック
 if (Get-Command psql -ErrorAction SilentlyContinue) {
     Write-Success "PostgreSQL が見つかりました"
 } else {
@@ -97,7 +72,6 @@ if (Get-Command psql -ErrorAction SilentlyContinue) {
     $MISSING_DEPS += "postgresql"
 }
 
-# Ollama チェック
 if (Get-Command ollama -ErrorAction SilentlyContinue) {
     Write-Success "Ollama が見つかりました"
 } else {
@@ -105,7 +79,6 @@ if (Get-Command ollama -ErrorAction SilentlyContinue) {
     $MISSING_DEPS += "ollama"
 }
 
-# Tesseract OCR チェック (オプション: 画像OCR用)
 if ((Get-Command tesseract -ErrorAction SilentlyContinue) -or (Test-Path "C:\Program Files\Tesseract-OCR\tesseract.exe")) {
     Write-Success "Tesseract OCR が見つかりました (画像OCR用)"
 } else {
@@ -113,8 +86,6 @@ if ((Get-Command tesseract -ErrorAction SilentlyContinue) -or (Test-Path "C:\Pro
     $MISSING_DEPS += "tesseract"
 }
 
-# 前提ソフトが無ければ環境設定 (setup-windows.ps1) を先に実行するよう促す。
-# 本体 install ではソフト導入をしない (= Linux が「apt install postgresql …」と案内するのと同じ思想)。
 if ($MISSING_DEPS -contains "postgresql" -or $MISSING_DEPS -contains "ollama") {
     Write-Error "前提ソフトが未導入です ($($MISSING_DEPS -join ', '))。`n先に管理者 PowerShell で環境設定を実行してください:`n  irm https://raw.githubusercontent.com/lmlight-app/staging-vite/main/scripts/setup-windows.ps1 | iex"
 }
@@ -122,7 +93,6 @@ if ($MISSING_DEPS -contains "tesseract") {
     Write-Warn "Tesseract OCR 未導入 (オプション: 画像OCR用)。必要なら setup-windows.ps1 で導入されます。"
 }
 
-# uv 仕込み (= 文字起こし / カスタム MCP 等の optional features の前提。Linux / macOS installer と同じ扱い、失敗しても続行)
 $UvExe = Join-Path $env:USERPROFILE ".local\bin\uv.exe"
 if (-not (Get-Command uv -ErrorAction SilentlyContinue) -and -not (Test-Path $UvExe)) {
     Write-Info "uv (Python パッケージ管理) をインストールしています (= optional features の前提)..."
@@ -137,22 +107,16 @@ if (-not (Get-Command uv -ErrorAction SilentlyContinue) -and -not (Test-Path $Uv
 }
 
 # ============================================================
-# ステップ 3: PostgreSQL セットアップ
 # ============================================================
 Write-Info "ステップ 3/5: PostgreSQL をセットアップ中..."
 
-# PostgreSQL ポート検出
 $DB_PORT = "5432"
 
 if (Get-Command psql -ErrorAction SilentlyContinue) {
     Write-Info "データベースを作成中..."
 
-    # IPv4 を明示 (= localhost は Windows で IPv6 ::1 に解決されがち。PostgreSQL が
-    # 127.0.0.1 (IPv4) でしか待ち受け/許可していないと localhost 接続が失敗する。
-    # 全 psql 呼び出しを 127.0.0.1 に固定し、IPv6/localhost 問題を回避)。
     $env:PGHOST = "127.0.0.1"
 
-    # PostgreSQL サービス起動
     $pgService = Get-Service -Name "postgresql*" -ErrorAction SilentlyContinue | Select-Object -First 1
     if ($pgService -and $pgService.Status -ne "Running") {
         try {
@@ -163,9 +127,6 @@ if (Get-Command psql -ErrorAction SilentlyContinue) {
         }
     }
 
-    # ポート検出 + postgres スーパーユーザーパスワード判定
-    # PG の Windows インストーラはパスワード設定を強制するので "postgres"
-    # は予測値ではない。候補を順に試して、全部だめなら GUI で聞く。
     $ErrorActionPreference = "Continue"
 
     function Test-PgConnect {
@@ -175,10 +136,6 @@ if (Get-Command psql -ErrorAction SilentlyContinue) {
         return ($LASTEXITCODE -eq 0)
     }
 
-    # ポート検出は pg_isready (終了コードのみ)。Linux 版 (install-linux.sh) と同じく
-    # エラーメッセージを一切パースしないため locale 非依存・認証不要。pg_isready は
-    # PostgreSQL 同梱で PATH 上にある (psql と同じ bin)。
-    # exit 0 = 接続受付中 (生存) / 2 = 応答なし (ポート違い・未起動)。
     function Test-PgPort {
         param([string]$Port)
         & pg_isready -h 127.0.0.1 -p $Port -q 2>$null
@@ -194,10 +151,6 @@ if (Get-Command psql -ErrorAction SilentlyContinue) {
     }
     Write-Info "PostgreSQL ポート: $DB_PORT"
 
-    # 既に DB_USER/DB_NAME が用意済みで DB_USER 自身で接続できるなら、postgres スーパーユーザ
-    # 手順 (パスワード解決 + CREATE USER/DATABASE + 所有権付け替え) は不要。DBA や手動で事前
-    # 構築した環境向け (= postgres ロールが無い / パスワード不明 / pg_hba で postgres 拒否でも通る)。
-    # pgvector は trusted extension なので DB 所有者である DB_USER で有効化できる。
     $dbProvisioned = $false
     $env:PGPASSWORD = $DB_PASSWORD
     $null = psql -U $DB_USER -p $DB_PORT -d $DB_NAME -c "SELECT 1" 2>$null
@@ -207,7 +160,6 @@ if (Get-Command psql -ErrorAction SilentlyContinue) {
     }
 
     if (-not $dbProvisioned) {
-    # postgres パスワード解決
     $pgSuperPassword = $null
     foreach ($candidate in @("postgres", $DB_PASSWORD, "")) {
         if (Test-PgConnect -Password $candidate -Port $DB_PORT) {
@@ -277,13 +229,9 @@ if (Get-Command psql -ErrorAction SilentlyContinue) {
     $env:PGPASSWORD = $pgSuperPassword
     Write-Success "PostgreSQL 管理者認証 OK"
 
-    # データベースとユーザー作成 — 冪等に (= 再 install / アップデート時の "既存" で止めない)。
-    # PG のエラーメッセージは locale 依存 (英語 "already exists" / 日本語 "すでに存在します")
-    # なので、メッセージ照合ではなく pg_roles / pg_database で存在確認してから作成する。
     $roleExists = psql -U postgres -p $DB_PORT -tAc "SELECT 1 FROM pg_roles WHERE rolname='$DB_USER'" 2>$null
     if (("$roleExists").Trim() -ne "1") {
         $createUserOut = psql -U postgres -p $DB_PORT -c "CREATE USER `"$DB_USER`" WITH PASSWORD '$DB_PASSWORD';" 2>&1
-        # bootstrap は best-effort (Linux 版と同様)。失敗しても止めず、起動時の migrations.py に委ねる。
         if ($LASTEXITCODE -ne 0) { Write-Warn "ユーザー作成に失敗しました (続行します): $createUserOut" }
     }
     $dbExists = psql -U postgres -p $DB_PORT -tAc "SELECT 1 FROM pg_database WHERE datname='$DB_NAME'" 2>$null
@@ -292,14 +240,9 @@ if (Get-Command psql -ErrorAction SilentlyContinue) {
         if ($LASTEXITCODE -ne 0) { Write-Warn "DB 作成に失敗しました (続行します): $createDbOut" }
     }
     $null = psql -U postgres -p $DB_PORT -c "ALTER USER `"$DB_USER`" CREATEDB;" 2>&1
-    }  # end if (-not $dbProvisioned) — postgres 管理者によるユーザ/DB 作成
+    }
 
-    # pgvector の DLL/拡張ファイルは環境設定 (setup-windows.ps1) で配置済みの前提
-    # (= Linux の apt …-pgvector に相当)。ここでは拡張の有効化のみ行う。
-    # 未配置なら下の CREATE EXTENSION が警告して RAG 無効のまま続行する。
 
-    # 拡張有効化は適切な権限で実行: provisioned なら DB 所有者 DB_USER (trusted ext)、
-    # 新規構築なら postgres。
     if ($dbProvisioned) { $env:PGPASSWORD = $DB_PASSWORD; $extUser = $DB_USER } else { $env:PGPASSWORD = $pgSuperPassword; $extUser = "postgres" }
     $extensionOut = psql -U $extUser -p $DB_PORT -d $DB_NAME -c "CREATE EXTENSION IF NOT EXISTS vector;" 2>&1
     if ($LASTEXITCODE -ne 0) {
@@ -308,10 +251,6 @@ if (Get-Command psql -ErrorAction SilentlyContinue) {
         Write-Success "pgvector 拡張 有効"
     }
 
-    # 既存テーブル/シーケンスの所有者を app user ($DB_USER) に揃える (= postgres 権限がある今のうちに)。
-    # 旧 install で postgres 所有のまま残った DB を救済し、起動時の migrations.py ($DB_USER 接続) が
-    # ALTER / CREATE INDEX できるようにする。新規 DB は対象ゼロで無害、冪等。
-    # provisioned (DB_USER で構築済み) なら所有権は既に揃っており postgres 権限も無いのでスキップ。
     if (-not $dbProvisioned) {
     $reassignSql = @"
 DO `$`$
@@ -328,26 +267,21 @@ BEGIN
 END `$`$;
 "@
     $null = $reassignSql | psql -U postgres -p $DB_PORT -d $DB_NAME 2>$null
-    }  # end if (-not $dbProvisioned) — 所有権付け替え
+    }
 
     $ErrorActionPreference = "Stop"
 
 
-    # ── DDL は backend 起動時の migrations.py が冪等に作成する ──
-    # (= schema / table / index / column 追加 / 初期 admin user は全部 Python 側が担当)
     Write-Info "スキーマ / テーブル / 初期 admin user は backend 起動時に自動作成されます"
 } else {
     Write-Warn "PostgreSQL がインストールされていないため、データベースセットアップをスキップしました"
 }
 
 # ============================================================
-# ステップ 4: Ollama セットアップ
 # ============================================================
 Write-Info "ステップ 4/5: Ollama をセットアップ中..."
 
 if (Get-Command ollama -ErrorAction SilentlyContinue) {
-    # .env の OLLAMA_CONTEXT_LENGTH を Windows User scope env に setx
-    # (= Ollama Desktop 起動時に env 継承するため)
     $ctxLen = "16384"  # default
     if (Test-Path "$INSTALL_DIR\.env") {
         $line = Get-Content "$INSTALL_DIR\.env" | Where-Object { $_ -match '^OLLAMA_CONTEXT_LENGTH=' } | Select-Object -First 1
@@ -356,7 +290,6 @@ if (Get-Command ollama -ErrorAction SilentlyContinue) {
     [Environment]::SetEnvironmentVariable("OLLAMA_CONTEXT_LENGTH", $ctxLen, "User")
     $env:OLLAMA_CONTEXT_LENGTH = $ctxLen
 
-    # Ollama が起動していない場合は起動 (現在の env を継承)
     $ollamaProcess = Get-Process -Name "ollama" -ErrorAction SilentlyContinue
     if (-not $ollamaProcess) {
         Write-Info "Ollama を起動中 (OLLAMA_CONTEXT_LENGTH=$ctxLen)..."
@@ -369,15 +302,11 @@ if (Get-Command ollama -ErrorAction SilentlyContinue) {
 }
 
 # ============================================================
-# ステップ 5: 設定とスクリプト作成
 # ============================================================
 Write-Info "ステップ 5/5: 設定を作成中..."
 
-# .env ファイル作成 (存在しない場合のみ)
 if (-not (Test-Path "$INSTALL_DIR\.env")) {
     $JWT_SECRET = -join ((48..57) + (97..122) | Get-Random -Count 64 | ForEach-Object { [char]$_ })
-    # config の既定値でカバーされる項目は書かない (= .env は既定と異なるものだけ。行が消えても
-    # 既定値で復帰でき、設定の正が config.py に一本化される)。path 系は install dir 依存なので残す。
     $ENV_CONTENT = @"
 LLM_BACKEND=ollama
 DATABASE_URL=postgresql://${DB_USER}:${DB_PASSWORD}@127.0.0.1:${DB_PORT}/${DB_NAME}
@@ -393,13 +322,10 @@ FILES_DIR=$INSTALL_DIR\files
     Write-Info ".env ファイルは既存のため、スキップしました"
 }
 
-# 起動スクリプト作成
 $START_SCRIPT = @'
-# AI Server 起動スクリプト
 $INSTALL_DIR = "$env:LOCALAPPDATA\db"
 Set-Location $INSTALL_DIR
 
-# .env 読み込み
 if (Test-Path "$INSTALL_DIR\.env") {
     Get-Content "$INSTALL_DIR\.env" | ForEach-Object {
         if ($_ -match "^([^#][^=]+)=(.*)$") {
@@ -408,13 +334,11 @@ if (Test-Path "$INSTALL_DIR\.env") {
     }
 }
 
-# Tesseract OCR (画像OCR用)
 if (Test-Path "C:\Program Files\Tesseract-OCR\tesseract.exe") {
     $env:PATH = "C:\Program Files\Tesseract-OCR;$env:PATH"
     $env:TESSDATA_PREFIX = "C:\Program Files\Tesseract-OCR\tessdata"
 }
 
-# FFmpeg PATH 設定 (文字起こし用・オプション)
 if (-not (Get-Command ffmpeg -ErrorAction SilentlyContinue)) {
     @(
         "$env:LOCALAPPDATA\Microsoft\WinGet\Packages\Gyan.FFmpeg_*\ffmpeg-*-full_build\bin",
@@ -429,7 +353,6 @@ if (-not (Get-Command ffmpeg -ErrorAction SilentlyContinue)) {
 
 Write-Host "AI Server を起動中..." -ForegroundColor Blue
 
-# PostgreSQL チェック
 $pgService = Get-Service -Name "postgresql*" -ErrorAction SilentlyContinue | Select-Object -First 1
 if ($pgService -and $pgService.Status -ne "Running") {
     Write-Host "PostgreSQL を起動中..."
@@ -437,20 +360,17 @@ if ($pgService -and $pgService.Status -ne "Running") {
     Start-Sleep -Seconds 2
 }
 
-# Ollama チェック
 if (-not (Get-Process -Name "ollama" -ErrorAction SilentlyContinue)) {
     Write-Host "Ollama を起動中..."
     Start-Process -FilePath "ollama" -ArgumentList "serve" -WindowStyle Hidden
     Start-Sleep -Seconds 3
 }
 
-# 既存プロセス終了
 Get-Process -Name "api" -ErrorAction SilentlyContinue | Where-Object { $_.Path -like "*db*" } | Stop-Process -Force
 Start-Sleep -Seconds 1
 
 if (-not $env:API_PORT) { $env:API_PORT = "8000" }
 
-# API 起動 (single process: API + Web frontend)
 Write-Host "API を起動中..."
 $apiProcess = Start-Process -FilePath "$INSTALL_DIR\api.exe" -WorkingDirectory $INSTALL_DIR -NoNewWindow -PassThru
 Start-Sleep -Seconds 3
@@ -460,11 +380,9 @@ Write-Host "AI Server が起動しました！" -ForegroundColor Green
 Write-Host ""
 Write-Host "  http://localhost:$($env:API_PORT)" -ForegroundColor Cyan
 
-# LAN IP 表示
 $lanIp = (Get-NetIPAddress -AddressFamily IPv4 | Where-Object { $_.IPAddress -ne "127.0.0.1" -and $_.PrefixOrigin -ne "WellKnown" } | Select-Object -First 1).IPAddress
 if ($lanIp) { Write-Host "  LAN:  http://${lanIp}:$($env:API_PORT)" -ForegroundColor Cyan }
 
-# mDNS hostname 表示 (Windows 10 1709+)
 $mdnsName = "$([System.Net.Dns]::GetHostName()).local"
 Write-Host "  mDNS: http://${mdnsName}:$($env:API_PORT)" -ForegroundColor Cyan
 
@@ -472,13 +390,11 @@ Write-Host ""
 Write-Host "  Ctrl+C で停止" -ForegroundColor Yellow
 Write-Host ""
 
-# Ctrl+C ハンドラー
 $null = Register-EngineEvent -SourceIdentifier PowerShell.Exiting -Action {
     Stop-Process -Id $apiProcess.Id -Force -ErrorAction SilentlyContinue
 }
 
 try {
-    # プロセス終了まで待機
     Wait-Process -Id $apiProcess.Id -ErrorAction SilentlyContinue
 } finally {
     Write-Host "Stopped"
@@ -488,9 +404,7 @@ try {
 
 Set-Content -Path "$INSTALL_DIR\start.ps1" -Value $START_SCRIPT -Encoding UTF8
 
-# 停止スクリプト作成
 $STOP_SCRIPT = @'
-# AI Server 停止スクリプト
 Write-Host "AI Server を停止中..."
 
 Get-Process -Name "api" -ErrorAction SilentlyContinue | Where-Object { $_.Path -like "*db*" } | Stop-Process -Force
@@ -500,15 +414,11 @@ Write-Host "AI Server を停止しました" -ForegroundColor Green
 
 Set-Content -Path "$INSTALL_DIR\stop.ps1" -Value $STOP_SCRIPT -Encoding UTF8
 
-# トグルスクリプト作成（macOSと同様の動作）
 $TOGGLE_SCRIPT = @'
-# AI Server トグルスクリプト
-# 起動中ならStop、停止中ならStart
 
 $INSTALL_DIR = "$env:LOCALAPPDATA\db"
 Set-Location $INSTALL_DIR
 
-# .env 読み込み
 $API_PORT = 8000
 if (Test-Path "$INSTALL_DIR\.env") {
     Get-Content "$INSTALL_DIR\.env" | ForEach-Object {
@@ -516,7 +426,6 @@ if (Test-Path "$INSTALL_DIR\.env") {
     }
 }
 
-# ヘルスチェック
 $isRunning = $false
 try {
     $response = Invoke-WebRequest -Uri "http://localhost:$API_PORT/health" -UseBasicParsing -TimeoutSec 2 -ErrorAction Stop
@@ -524,10 +433,8 @@ try {
 } catch { }
 
 if ($isRunning) {
-    # 起動中 → 停止
     & "$INSTALL_DIR\stop.ps1"
 
-    # トースト通知
     [Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] | Out-Null
     $template = [Windows.UI.Notifications.ToastTemplateType]::ToastText01
     $xml = [Windows.UI.Notifications.ToastNotificationManager]::GetTemplateContent($template)
@@ -535,10 +442,8 @@ if ($isRunning) {
     $notifier = [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier("AI Server")
     $notifier.Show([Windows.UI.Notifications.ToastNotification]::new($xml))
 } else {
-    # 停止中 → 起動
     Start-Process powershell -ArgumentList "-ExecutionPolicy Bypass -File `"$INSTALL_DIR\start.ps1`"" -WindowStyle Hidden
 
-    # API起動待ち (最大30秒)
     $ready = $false
     for ($i = 0; $i -lt 30; $i++) {
         Start-Sleep -Seconds 1
@@ -553,7 +458,6 @@ if ($isRunning) {
         Start-Sleep -Seconds 1
         Start-Process "http://localhost:$API_PORT"
 
-        # トースト通知
         [Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] | Out-Null
         $template = [Windows.UI.Notifications.ToastTemplateType]::ToastText01
         $xml = [Windows.UI.Notifications.ToastNotificationManager]::GetTemplateContent($template)

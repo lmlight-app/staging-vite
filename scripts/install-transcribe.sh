@@ -130,12 +130,9 @@ if [ -f "$ENV_FILE" ]; then
 fi
 
 # GPU mode: install openai-whisper + torch
-# ※ GPU版(torch) が効くのは「ソース実行(pyproject.toml あり)」の配布のみ。
-#   バイナリ配布(./api, pywhispercpp/CPU 同梱)は torch を使わないので --gpu は無効。
 if [ "$GPU_MODE" = true ]; then
     echo ""
     if [ -f "${INSTALL_DIR}/pyproject.toml" ]; then
-        # ソース配布: api が venv の torch/openai-whisper を使うので有効
         if ! command -v uv &> /dev/null; then
             echo "uv をインストール中..."
             curl -LsSf https://astral.sh/uv/install.sh | sh
@@ -146,11 +143,10 @@ if [ "$GPU_MODE" = true ]; then
         uv sync --extra gpu --quiet
         echo "[OK] GPU版インストール完了"
     else
-        # バイナリ配布: 同梱の pywhispercpp(CPU) で動作。torch は使われないのでスキップ。
         echo "[WARN] この配布はバイナリ版 (CPU pywhispercpp 同梱) です。"
         echo "   --gpu (openai-whisper + torch) はこの配布では使用されないためスキップします。"
         echo "   (GPU 文字起こしが必要な場合はソース版での実行が必要です)"
-        GPU_MODE=false   # 最終表示を CPU 版に統一
+        GPU_MODE=false
     fi
 fi
 

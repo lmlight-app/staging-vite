@@ -1,7 +1,6 @@
 ; AI Server Windows installer (Inno Setup 6+).
 ;
 ; User-facing branding is "AI Server" — matches the legacy
-; `irm | iex` flow's display ("AI Server インストーラー for Windows")
 ; so existing users see continuity on upgrade. Internal binary,
 ; install directory ("db"), CI artefact names retain `lmlight` to
 ; avoid breaking existing release URLs and PyInstaller bundle naming.

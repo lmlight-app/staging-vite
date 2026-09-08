@@ -1,21 +1,11 @@
-# AI Server 環境設定 (Windows) — 前提ソフト(PostgreSQL / pgvector / Ollama / Tesseract)を導入
-# 使い方: 管理者 PowerShell で実行
 #   irm https://raw.githubusercontent.com/lmlight-app/staging-vite/main/scripts/setup-windows.ps1 | iex
 #
-# これは Linux の `apt install postgresql …-pgvector` / macOS の `brew install …`
-# に相当する「環境設定フェーズ」。pgvector の DLL を C:\Program Files\PostgreSQL に
-# 置くため管理者権限が必須。完了後、通常ユーザーで install-windows.ps1 (本体) を実行する。
 
 $ErrorActionPreference = "Stop"
-# TLS 1.2 (Windows PowerShell 5.1 は既定で TLS 1.0/1.1。api.github.com 等は TLS1.2+ 必須)
 [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
 
-# pgvector zip の取得元 (本線 binary とは別 release。dist では promote.sh が R2 vite-latest に書換)
 $PGVECTOR_URL = if ($env:PGVECTOR_BASE_URL) { $env:PGVECTOR_BASE_URL } else { "https://github.com/lmlight-app/dist_vite/releases/download/pgvector-latest" }
 
-# 出力ヘルパー。全 OS/スクリプトで ASCII タグ ([OK]/[WARN]/[ERROR]/[INFO]) + 色に統一
-# (CP932 コンソールで emoji が化けるため。日本語本文は CP932 で表示可)。
-# install-windows.ps1 と表現を揃える。
 function Write-Info { param($msg) Write-Host "[INFO] $msg" -ForegroundColor Blue }
 function Write-Success { param($msg) Write-Host "[OK] $msg" -ForegroundColor Green }
 function Write-Error { param($msg) Write-Host "[ERROR] $msg" -ForegroundColor Red; exit 1 }
@@ -23,16 +13,13 @@ function Write-Warn { param($msg) Write-Host "[WARN] $msg" -ForegroundColor Yell
 
 Write-Host "Setting up AI Server environment for Windows (PostgreSQL / pgvector / Ollama)..."
 
-# 管理者チェック (pgvector DLL を Program Files に置くため必須)
 $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 if (-not $isAdmin) {
     Write-Error "管理者権限が必要です。PowerShell を「管理者として実行」で開き直してから再実行してください (pgvector の DLL 配置のため)。"
 }
 
-# ── 前提ソフトの検出 + winget 導入 ──
 $MISSING_DEPS = @()
 
-# psql が PATH に無くても C:\Program Files\PostgreSQL\<版>\bin を探して PATH に足す
 function Add-PgBinToPath {
     if (-not (Get-Command psql -ErrorAction SilentlyContinue)) {
         $pgRoot = Get-ChildItem "C:\Program Files\PostgreSQL" -Directory -ErrorAction SilentlyContinue |
@@ -65,16 +52,13 @@ foreach ($dep in $MISSING_DEPS) {
     }
 }
 
-# ── pgvector の配置 (= Linux の …-pgvector パッケージ相当) ──
 Write-Info "pgvector をセットアップ中..."
 
-# PostgreSQL サービス起動 (停止中なら)
 $pgService = Get-Service -Name "postgresql*" -ErrorAction SilentlyContinue | Select-Object -First 1
 if ($pgService -and $pgService.Status -ne "Running") {
     try { Start-Service $pgService.Name -ErrorAction Stop; Start-Sleep -Seconds 2 } catch { Write-Warn "PostgreSQL サービスの起動に失敗しました。手動で起動してください。" }
 }
 
-# PostgreSQL ルートをバージョン非依存で検出 (= 13/17/将来版も拾う)
 $PG_DIR = $null
 $pgBase = "C:\Program Files\PostgreSQL"
 if (Test-Path $pgBase) {
@@ -93,8 +77,6 @@ if (-not $PG_DIR) {
 } elseif (Test-Path "$PG_DIR\lib\vector.dll") {
     Write-Success "pgvector は既に配置済みです"
 } else {
-    # 自前ビルドの pgvector-pg<major>-windows-x64.zip を取得し、lib/ と share/extension/ に配置。
-    # この自前ビルドは VC++ Redistributable 非依存。Program Files への書込なので管理者が必須。
     $pgMajor = (Split-Path $PG_DIR -Leaf)
     Write-Info "pgvector DLL を取得・配置中 (PostgreSQL $pgMajor)..."
     try {

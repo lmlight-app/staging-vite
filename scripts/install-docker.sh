@@ -1,18 +1,14 @@
 #!/bin/bash
 # AI Server Docker Installer
-# 使い方:
-#   curl -fsSL https://raw.githubusercontent.com/lmlight-app/staging-vite/main/scripts/install-docker.sh | bash                # vLLM 版 (= 既定。外部 vLLM サーバ前提)
-#   curl -fsSL https://raw.githubusercontent.com/lmlight-app/staging-vite/main/scripts/install-docker.sh | EDITION=ollama bash # Ollama 版
 set -e
 
 INSTALL_DIR="${DB_INSTALL_DIR:-$HOME/digitalbase}"
-EDITION="${EDITION:-vllm}"                    # vllm (既定) | ollama
+EDITION="${EDITION:-vllm}"
 DOCKER_USER="${DOCKER_USER:-lmlight}"
 IMAGE="${DB_IMAGE:-$DOCKER_USER/digitalbase:latest}"
 APP_CONTAINER="${APP_CONTAINER:-digitalbase-app}"
 PG_CONTAINER="${PG_CONTAINER:-digitalbase-postgres}"
 APP_PORT="${APP_PORT:-8000}"
-# DB 接続情報は env で上書き可 (DB_USER/DB_PASS/DB_NAME)、既定 digitalbase。PG container 作成と DATABASE_URL で共通。
 DB_USER="${DB_USER:-digitalbase}"
 DB_PASS="${DB_PASS:-digitalbase}"
 DB_NAME="${DB_NAME:-digitalbase}"
@@ -39,7 +35,6 @@ docker info >/dev/null 2>&1 || {
     exit 1
 }
 
-# Port 競合 check
 if lsof -i ":$APP_PORT" >/dev/null 2>&1 || ss -tln 2>/dev/null | grep -q ":$APP_PORT "; then
     echo "[WARN] Port $APP_PORT 既に使用中です。別 port を指定するには APP_PORT=8001 で再実行してください"
     read -p "  続行しますか? [y/N]: " yn
@@ -61,8 +56,6 @@ mkdir -p "$INSTALL_DIR" "$INSTALL_DIR/files" "$INSTALL_DIR/postgres-data"
 if [ ! -f "$INSTALL_DIR/.env" ]; then
     JWT_SECRET=$(openssl rand -hex 32 2>/dev/null || date +%s%N | sha256sum | cut -c1-64)
     OAUTH_ENCRYPTION_KEY=$(openssl rand -hex 32 2>/dev/null || date +%s%N | sha256sum | cut -c1-64)
-    # config の既定値でカバーされる項目は書かない (= .env は既定と異なるものだけ。行が消えても
-    # 既定値で復帰でき、設定の正が config.py に一本化される)。FILES_DIR は bind mount 先なので残す。
     cat > "$INSTALL_DIR/.env" << EOF
 LLM_BACKEND=$EDITION
 DATABASE_URL=postgresql://${DB_USER}:${DB_PASS}@$PG_CONTAINER:5432/${DB_NAME}
@@ -82,7 +75,6 @@ fi
 NETWORK="${DB_NETWORK:-digitalbase-net}"
 docker network inspect "$NETWORK" >/dev/null 2>&1 || docker network create "$NETWORK"
 
-# ── 5. PostgreSQL container (= pgvector 同梱) ──────────────────────────
 if ! docker ps -a --format '{{.Names}}' | grep -q "^${PG_CONTAINER}$"; then
     echo "PostgreSQL (pgvector) container 起動..."
     docker run -d --name "$PG_CONTAINER" --restart unless-stopped \
@@ -92,7 +84,6 @@ if ! docker ps -a --format '{{.Names}}' | grep -q "^${PG_CONTAINER}$"; then
         -e POSTGRES_DB="$DB_NAME" \
         -v "$INSTALL_DIR/postgres-data:/var/lib/postgresql/data" \
         pgvector/pgvector:pg16 >/dev/null
-    # PG 起動待ち
     echo "   PostgreSQL 起動待機中..."
     for i in $(seq 1 30); do
         if docker exec "$PG_CONTAINER" pg_isready -U "$DB_USER" >/dev/null 2>&1; then
@@ -107,7 +98,6 @@ else
     echo "[INFO] 既存 PostgreSQL container 利用: $PG_CONTAINER"
 fi
 
-# ── 6. License 配置案内 ────────────────────────────────────────────────
 if [ ! -f "$INSTALL_DIR/license.lic" ]; then
     echo ""
     echo "ライセンス配置オプション (= 起動後でも upload 可):"
@@ -117,12 +107,9 @@ if [ ! -f "$INSTALL_DIR/license.lic" ]; then
     echo ""
 fi
 
-# ── 7. アプリ container 起動 (= 操作は素の docker コマンド) ────────────
 echo ""
 echo "アプリ container 起動..."
-# 既存 app container があれば作り直す (= data は volume に残るので安全)
 docker rm -f "$APP_CONTAINER" >/dev/null 2>&1 || true
-# --add-host: Linux で host.docker.internal を有効化 (= Mac/Win は default で有効)
 docker run -d --name "$APP_CONTAINER" --restart unless-stopped \
     --network "$NETWORK" \
     --add-host=host.docker.internal:host-gateway \

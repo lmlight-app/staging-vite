@@ -1,6 +1,4 @@
 #!/bin/bash
-# DigitalBase - Office画像化 (LibreOffice) インストーラ
-# PowerPoint 等の Office 文書を PDF 化して「AI画像解析」で読めるようにするオプション機能
 set -e
 
 TOOLS_DIR="${HOME}/.local/db/tools"
@@ -10,8 +8,6 @@ if [ "$(id -u)" != "0" ] && command -v sudo >/dev/null 2>&1; then
     SUDO="sudo"
 fi
 
-# 日本語 (CJK) フォント確認。soffice の PDF 描画に必須で、無いと日本語が全て □ (豆腐) になり
-# AI画像解析が文字を読めない。soffice 導入済み環境でも欠けていることがあるため必ず確認する。
 ensure_cjk_fonts() {
     if command -v fc-list >/dev/null 2>&1 && [ -n "$(fc-list :lang=ja 2>/dev/null | head -1)" ]; then
         return 0
@@ -33,8 +29,6 @@ ensure_cjk_fonts() {
     fi
 }
 
-# 既に soffice を検出できるなら LibreOffice は入れない (検出順は DigitalBase 本体と同じ)。
-# ただしフォント欠落は soffice 導入済みでも起きるため、確認だけは必ず行う。
 if [ -n "$SOFFICE_PATH" ] && [ -x "$SOFFICE_PATH" ]; then
     echo "[OK] 既にインストール済み: $SOFFICE_PATH"
     ensure_cjk_fonts

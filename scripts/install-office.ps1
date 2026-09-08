@@ -1,11 +1,7 @@
-# DigitalBase - Office画像化 (LibreOffice) インストーラー
-# PowerPoint 等の Office 文書を PDF 化して「AI画像解析」で読めるようにするオプション機能
-# 使い方: 通常ユーザーの PowerShell で実行 (管理者権限不要)
 #   irm https://raw.githubusercontent.com/lmlight-app/staging-vite/main/scripts/install-office.ps1 | iex
 
 $ErrorActionPreference = "Stop"
 
-# soffice 検出 (DigitalBase 本体の find_soffice() と同じ探索順: SOFFICE_PATH → 標準インストール先 → PATH)
 function Find-Soffice {
     if ($env:SOFFICE_PATH -and (Test-Path $env:SOFFICE_PATH)) { return $env:SOFFICE_PATH }
     foreach ($p in @(

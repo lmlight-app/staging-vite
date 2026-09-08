@@ -41,7 +41,6 @@ Write-Info "AI Server post-install を開始します"
 Write-Info "InstallDir: $InstallDir"
 
 
-# ─── 1. winget で PostgreSQL / Ollama をインストール ─────────────────
 
 # Existing .env wins over the defaults so re-runs preserve any custom
 # credentials the user already set.
@@ -108,7 +107,6 @@ if (-not $pgInstalled) {
 }
 
 
-# ─── 2. PostgreSQL 起動 + DB / user 作成 ─────────────────────────────
 
 # Pick whichever PG service the installer registered. PG installs by
 # major version so the service name is `postgresql-x64-{NN}`.
@@ -142,7 +140,6 @@ $psql    = Join-Path $pgRoot.FullName "bin\psql.exe"
 $pgMajor = $pgRoot.Name
 
 
-# ─── 3. pgvector DLL の配置 ──────────────────────────────────────────
 
 $vectorDll = Join-Path $pgRoot.FullName "lib\vector.dll"
 if (-not (Test-Path $vectorDll)) {
@@ -185,7 +182,6 @@ if (-not (Test-Path $vectorDll)) {
 }
 
 
-# ─── 4. DB / user 作成 + DDL 適用 ────────────────────────────────────
 
 # PG super-user password handling:
 # The PG Windows installer forces the user to set a password during
@@ -333,7 +329,6 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 
-# ─── 5. .env 生成 (既存があればスキップ) ─────────────────────────────
 
 if (-not (Test-Path $envPath)) {
     $jwtSecret = -join ((48..57) + (97..122) | Get-Random -Count 64 | ForEach-Object { [char]$_ })
@@ -360,7 +355,6 @@ AUTH_MODE=local
 }
 
 
-# ─── 6. Ollama serve をバックグラウンド起動 ─────────────────────────
 
 if (Get-Command ollama -ErrorAction SilentlyContinue) {
     if (-not (Get-Process -Name "ollama" -ErrorAction SilentlyContinue)) {
