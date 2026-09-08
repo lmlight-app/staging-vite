@@ -7,6 +7,23 @@ $ErrorActionPreference = "Stop"
 # ============================================================
 
 $BASE_URL = if ($env:DB_BASE_URL) { $env:DB_BASE_URL } else { "https://github.com/lmlight-app/dist_vite/releases/latest/download" }
+$VERSION_BASE_URL="https://github.com/lmlight-app/dist_vite/releases/download/"
+$DB_VERSION = if ($env:DB_VERSION) { $env:DB_VERSION } else { "latest" }
+if ($DB_VERSION -notmatch '^(latest|\d{2}\.\d{4}(\.\d+)?|x\d{8}(\.\d+)?(-[a-z0-9]+)?)$') {
+    throw "DB_VERSION must be latest, a version like 26.0908.2, or a release tag like x20260908.2-windows"
+}
+if ($DB_VERSION -ne "latest" -and -not $env:DB_BASE_URL) {
+    $releaseRef = $DB_VERSION
+    if ($VERSION_BASE_URL -like "*github.com/*" -and $releaseRef -notlike "x*") {
+        $raw = "20" + ($releaseRef -replace '^(\d{2})\.(\d{4})', '$1$2')
+        $tags = (Invoke-RestMethod -Uri "https://api.github.com/repos/lmlight-app/dist_vite/releases?per_page=100" -UseBasicParsing).tag_name |
+            Where-Object { $_ -match ('^x' + [regex]::Escape($raw) + '(-[a-z0-9]+)?$') }
+        $releaseRef = ($tags | Where-Object { $_ -like "*-windows" } | Select-Object -First 1)
+        if (-not $releaseRef) { $releaseRef = ($tags | Where-Object { $_ -notlike "*-*" } | Select-Object -First 1) }
+        if (-not $releaseRef) { throw "Version $DB_VERSION was not found in releases; set DB_VERSION to the release tag instead (e.g. x20260908.2-windows)" }
+    }
+    $BASE_URL = "$VERSION_BASE_URL$releaseRef"
+}
 $INSTALL_DIR = if ($env:DB_INSTALL_DIR) { $env:DB_INSTALL_DIR } else { "$env:LOCALAPPDATA\db" }
 $ARCH = if ($env:DB_ARCH) { $env:DB_ARCH } else { "amd64" }
 

@@ -26,7 +26,7 @@ UV_VERSION_DEFAULT="latest"
 UV_MIN_VERSION="0.12.1"
 usage() {
     cat << 'USAGE'
-Usage: install-linux-sglang.sh [--sglang-version X.Y.Z] [--uv-version X.Y.Z] [--torch-index URL] [--offline --wheelhouse DIR] [--version 26.0908.2]
+Usage: install-linux-sglang.sh [--sglang-version X.Y.Z] [--uv-version X.Y.Z] [--torch-index URL] [--offline --wheelhouse DIR] [--version VERSION]
   --sglang-version  SGLang: latest | X.Y.Z        (default: "sglang_version" in latest.json; env DB_SGLANG_VERSION)
   --uv-version    uv: latest | X.Y.Z             (default: "uv_version" in latest.json, else latest; env DB_UV_VERSION)
   --torch-index   PyTorch wheel index URL (default: "torch_index" in latest.json; empty = uv --torch-backend=auto)
@@ -49,7 +49,11 @@ while [ $# -gt 0 ]; do
     shift
 done
 DB_VERSION="${DB_VERSION:-latest}"
-if [ "$DB_VERSION" != "latest" ] && [ -z "${DB_BASE_URL:-}" ]; then
+printf '%s' "$DB_VERSION" | grep -Eq '^(latest|[0-9]{2}\.[0-9]{4}(\.[0-9]+)?|x[0-9]{8}(\.[0-9]+)?(-[a-z0-9]+)?)$' \
+    || { echo "[ERROR] --version must be latest, a version like 26.0908.2, or a release tag like x20260908.2-linux"; exit 2; }
+TARGET_VERSION=""
+if [ "$DB_VERSION" != "latest" ]; then
+    [ "${OFFLINE:-0}" -eq 0 ] || { echo "[ERROR] --version cannot be combined with --offline (the wheelhouse decides the version)"; exit 2; }
     RELEASE_REF="$DB_VERSION"
     case "$VERSION_BASE_URL" in
         *github.com/*)
@@ -65,7 +69,8 @@ if [ "$DB_VERSION" != "latest" ] && [ -z "${DB_BASE_URL:-}" ]; then
             esac
             ;;
     esac
-    BASE_URL="${VERSION_BASE_URL}${RELEASE_REF}"
+    [ -n "${DB_BASE_URL:-}" ] || BASE_URL="${VERSION_BASE_URL}${RELEASE_REF}"
+    TARGET_VERSION="$(printf '%s' "$RELEASE_REF" | sed -E 's/^x20([0-9]{2})([0-9]{4})/\1.\2/; s/-[a-z0-9]+$//')"
 fi
 
 offline_manifest() {
@@ -145,6 +150,10 @@ install_binary() {
     fi
     mv -f "$INSTALL_DIR/api.new" "$INSTALL_DIR/api"
     log "[OK] binary installed (previous kept as api.prev for 'db rollback')"
+    if [ -n "$TARGET_VERSION" ]; then
+        [ -f "$INSTALL_DIR/VERSION" ] && cp -f "$INSTALL_DIR/VERSION" "$INSTALL_DIR/VERSION.prev"
+        printf '%s\n' "$TARGET_VERSION" > "$INSTALL_DIR/VERSION"
+    fi
 }
 
 
@@ -169,6 +178,15 @@ if [ -z "$SGLANG_VERSION" ]; then
 fi
 log "[UPDATE] target: app $(manifest_get version), SGLang $SGLANG_VERSION, uv $UV_VERSION, torch index ${TORCH_INDEX:-auto}"
 
+[ -n "$TARGET_VERSION" ] || TARGET_VERSION="$(manifest_get version)"
+version_lt() { awk -v a="$1" -v b="$2" 'BEGIN { n = split(a, x, "."); m = split(b, y, "."); k = (n > m) ? n : m
+    for (i = 1; i <= k; i++) { p = (i <= n) ? x[i] + 0 : 0; q = (i <= m) ? y[i] + 0 : 0; if (p < q) exit 0; if (p > q) exit 1 } exit 1 }'; }
+INSTALLED_VERSION="$(cat "$INSTALL_DIR/VERSION" 2>/dev/null || true)"
+if [ -n "$TARGET_VERSION" ] && [ -n "$INSTALLED_VERSION" ] && version_lt "$TARGET_VERSION" "$INSTALLED_VERSION" && [ "${DB_ALLOW_DOWNGRADE:-0}" != "1" ]; then
+    echo "[ERROR] $TARGET_VERSION is older than the installed $INSTALLED_VERSION. Data written by the newer version may become unreadable."
+    echo "        Use 'db rollback' to return to the previous version, or set DB_ALLOW_DOWNGRADE=1 to force."
+    exit 1
+fi
 WAS_ACTIVE=0
 if [ -z "$DB_NO_SERVICE" ]; then
     { systemctl is-active --quiet db 2>/dev/null || systemctl is-active --quiet digitalbase 2>/dev/null; } && WAS_ACTIVE=1
@@ -445,7 +463,7 @@ if [ -f .update-requested ]; then
     touch .update-running
     DB_INSTALL_DIR="$(pwd -P)"; export DB_INSTALL_DIR
     if [ -n "$ENGINE_SPEC" ]; then DB_VLLM_VERSION="$ENGINE_SPEC"; DB_SGLANG_VERSION="$ENGINE_SPEC"; export DB_VLLM_VERSION DB_SGLANG_VERSION; fi
-    if [ -n "$PRODUCT_VERSION" ]; then DB_VERSION="$PRODUCT_VERSION"; export DB_VERSION; fi
+    if [ -n "$PRODUCT_VERSION" ]; then DB_VERSION="$PRODUCT_VERSION"; DB_ALLOW_DOWNGRADE=1; export DB_VERSION DB_ALLOW_DOWNGRADE; fi
     echo "$(_ts) [UPDATE] running installer: $UPDATE_URL" >> update.log
     echo "[UPDATE] running installer: $UPDATE_URL"
     RC=1
@@ -610,6 +628,11 @@ rollback_binary() {
     mv -f "$DB_HOME/api" "$DB_HOME/api.rollback" \
         && mv -f "$DB_HOME/api.prev" "$DB_HOME/api" \
         && mv -f "$DB_HOME/api.rollback" "$DB_HOME/api.prev" || return 1
+    if [ -f "$DB_HOME/VERSION.prev" ]; then
+        mv -f "$DB_HOME/VERSION" "$DB_HOME/VERSION.rollback" 2>/dev/null || true
+        mv -f "$DB_HOME/VERSION.prev" "$DB_HOME/VERSION"
+        [ -f "$DB_HOME/VERSION.rollback" ] && mv -f "$DB_HOME/VERSION.rollback" "$DB_HOME/VERSION.prev"
+    fi
     if [ -d "$DB_HOME/venv.prev" ]; then
         mv "$DB_HOME/venv" "$DB_HOME/venv.rollback" \
             && mv "$DB_HOME/venv.prev" "$DB_HOME/venv" \

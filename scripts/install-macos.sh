@@ -5,8 +5,19 @@ set -e
 
 BASE_URL="${DB_BASE_URL:-https://github.com/lmlight-app/dist_vite/releases/latest/download}"
 VERSION_BASE_URL="https://github.com/lmlight-app/dist_vite/releases/download/"
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --version) DB_VERSION="${2:?--version requires latest|26.0908.2|x20260908.2-macos}"; shift ;;
+        -h|--help) echo "Usage: install-macos.sh [--version VERSION]"; exit 0 ;;
+        *) echo "[ERROR] Unknown option: $1 (usage: install-macos.sh [--version VERSION])"; exit 2 ;;
+    esac
+    shift
+done
 DB_VERSION="${DB_VERSION:-latest}"
-if [ "$DB_VERSION" != "latest" ] && [ -z "${DB_BASE_URL:-}" ]; then
+printf '%s' "$DB_VERSION" | grep -Eq '^(latest|[0-9]{2}\.[0-9]{4}(\.[0-9]+)?|x[0-9]{8}(\.[0-9]+)?(-[a-z0-9]+)?)$' \
+    || { echo "[ERROR] --version must be latest, a version like 26.0908.2, or a release tag like x20260908.2-macos"; exit 2; }
+TARGET_VERSION=""
+if [ "$DB_VERSION" != "latest" ]; then
     RELEASE_REF="$DB_VERSION"
     case "$VERSION_BASE_URL" in
         *github.com/*)
@@ -17,12 +28,13 @@ if [ "$DB_VERSION" != "latest" ] && [ -z "${DB_BASE_URL:-}" ]; then
                     CANDIDATES="$(curl -fsSL "https://api.github.com/repos/lmlight-app/dist_vite/releases?per_page=100" 2>/dev/null \
                         | grep -o '"tag_name": *"x'"$RAW_VERSION"'\(-[a-z0-9]*\)\{0,1\}"' | sed -E 's/.*"(x[^"]+)".*/\1/')"
                     RELEASE_REF="$(printf '%s\n' "$CANDIDATES" | grep -m1 -- '-macos$' || printf '%s\n' "$CANDIDATES" | grep -m1 -v -- '-' || true)"
-                    [ -n "$RELEASE_REF" ] || { echo "[ERROR] Version $DB_VERSION was not found in releases; pass the release tag instead (e.g. x20260908.2-linux)"; exit 1; }
+                    [ -n "$RELEASE_REF" ] || { echo "[ERROR] Version $DB_VERSION was not found in releases; pass the release tag instead (e.g. x20260908.2-macos)"; exit 1; }
                     ;;
             esac
             ;;
     esac
-    BASE_URL="${VERSION_BASE_URL}${RELEASE_REF}"
+    [ -n "${DB_BASE_URL:-}" ] || BASE_URL="${VERSION_BASE_URL}${RELEASE_REF}"
+    TARGET_VERSION="$(printf '%s' "$RELEASE_REF" | sed -E 's/^x20([0-9]{2})([0-9]{4})/\1.\2/; s/-[a-z0-9]+$//')"
 fi
 INSTALL_DIR="${DB_INSTALL_DIR:-$HOME/.local/db}"
 ARCH="$(uname -m)"
@@ -62,8 +74,20 @@ install_binary() {
     fi
     mv -f "$INSTALL_DIR/api.new" "$INSTALL_DIR/api"
     log "[OK] binary installed (previous kept as api.prev for 'db rollback')"
+    if [ -n "$TARGET_VERSION" ]; then
+        [ -f "$INSTALL_DIR/VERSION" ] && cp -f "$INSTALL_DIR/VERSION" "$INSTALL_DIR/VERSION.prev"
+        printf '%s\n' "$TARGET_VERSION" > "$INSTALL_DIR/VERSION"
+    fi
 }
 
+version_lt() { awk -v a="$1" -v b="$2" 'BEGIN { n = split(a, x, "."); m = split(b, y, "."); k = (n > m) ? n : m
+    for (i = 1; i <= k; i++) { p = (i <= n) ? x[i] + 0 : 0; q = (i <= m) ? y[i] + 0 : 0; if (p < q) exit 0; if (p > q) exit 1 } exit 1 }'; }
+INSTALLED_VERSION="$(cat "$INSTALL_DIR/VERSION" 2>/dev/null || true)"
+if [ -n "$TARGET_VERSION" ] && [ -n "$INSTALLED_VERSION" ] && version_lt "$TARGET_VERSION" "$INSTALLED_VERSION" && [ "${DB_ALLOW_DOWNGRADE:-0}" != "1" ]; then
+    echo "[ERROR] $TARGET_VERSION is older than the installed $INSTALLED_VERSION. Data written by the newer version may become unreadable."
+    echo "        Use 'db rollback' to return to the previous version, or set DB_ALLOW_DOWNGRADE=1 to force."
+    exit 1
+fi
 [ -f "$INSTALL_DIR/stop.sh" ] && "$INSTALL_DIR/stop.sh" 2>/dev/null || true
 
 # Download single binary (API + frontend embedded)
@@ -221,6 +245,11 @@ rollback_binary() {
     mv -f "$DB_HOME/api" "$DB_HOME/api.rollback" \
         && mv -f "$DB_HOME/api.prev" "$DB_HOME/api" \
         && mv -f "$DB_HOME/api.rollback" "$DB_HOME/api.prev" || return 1
+    if [ -f "$DB_HOME/VERSION.prev" ]; then
+        mv -f "$DB_HOME/VERSION" "$DB_HOME/VERSION.rollback" 2>/dev/null || true
+        mv -f "$DB_HOME/VERSION.prev" "$DB_HOME/VERSION"
+        [ -f "$DB_HOME/VERSION.rollback" ] && mv -f "$DB_HOME/VERSION.rollback" "$DB_HOME/VERSION.prev"
+    fi
     printf 'result=rolled_back\nexit_code=0\nfinished_at=%s\n' "$(_ts)" > "$DB_HOME/.update-result"
     echo "$(_ts) [ROLLBACK] api <-> api.prev swapped" >> "$DB_HOME/update.log"
     echo "[OK] Rolled back to the previous binary (run 'db rollback' again to undo)"
