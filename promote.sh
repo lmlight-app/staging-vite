@@ -41,6 +41,9 @@ for f in *.sh *.ps1; do
   # version-pinned binary ($VERSION_BASE_URL for --version): staging は GitHub Releases の <tag>/、dist(本番) は R2 の vite-<version or tag>/
   # (promote(dist→R2) が vite-$TAG と vite-$VERSION の両方に同梱する。本番は GitHub API を引かない)
   sed -i '' 's|VERSION_BASE_URL="https://github.com/lmlight-app/dist_vite/releases/download/"|VERSION_BASE_URL="https://pub-a2cab4360f1748cab5ae1c0f12cddc0a.r2.dev/vite-"|' "$f"
+  # script の self-reference (= 使い方コメント等の raw.githubusercontent .../main/scripts/X)
+  # を R2 CDN (vite-scripts/X) へ。install-docker.sh / install-windows.ps1 等すべてに適用。
+  sed -i '' 's|https://raw.githubusercontent.com/lmlight-app/dist_vite/main/scripts/|https://pub-a2cab4360f1748cab5ae1c0f12cddc0a.r2.dev/vite-scripts/|g' "$f"
 done
 for f in installer/*.iss installer/*.ps1; do
   [ -f "$f" ] && sed -i '' 's|lmlight-app/staging-vite|lmlight-app/dist_vite|g' "$f"
