@@ -183,6 +183,8 @@ set_env() {
         sed -i.bak "s|^${key}=.*|${key}=${value}|" "$ENV_FILE"
         rm -f "${ENV_FILE}.bak"
     else
+        # 末尾に改行が無い .env に追記すると前の行と連結する (2026-09-10 の本番事故) → 先に改行を補う
+        [ -z "$(tail -c1 "$ENV_FILE")" ] || printf '\n' >> "$ENV_FILE"
         printf '%s=%s\n' "$key" "$value" >> "$ENV_FILE"
     fi
     echo ".envを更新: ${key}=${value}"
