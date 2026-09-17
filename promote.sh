@@ -17,6 +17,8 @@ echo "Promoting staging-vite → dist_vite"
 # subdir is handled separately below.
 cp "$STAGING_DIR/scripts/"*.sh  "$DIST_DIR/scripts/" 2>/dev/null || true
 cp "$STAGING_DIR/scripts/"*.ps1 "$DIST_DIR/scripts/" 2>/dev/null || true
+# docker-compose.yml (= R2 vite-scripts/ に置く compose 版の配布物)
+cp "$STAGING_DIR/scripts/"*.yml "$DIST_DIR/scripts/" 2>/dev/null || true
 
 # Inno Setup installer (EXE wizard) — .iss + post-install.ps1.
 # Without this, edits to installer/ in staging never reach dist_vite.
@@ -28,7 +30,7 @@ cp "$STAGING_DIR/scripts/installer/"*.ps1 "$DIST_DIR/scripts/installer/" 2>/dev/
 # and the installer's post-install.ps1 reference raw.githubusercontent
 # / api.github.com paths that include the org/repo path.
 cd "$DIST_DIR/scripts"
-for f in *.sh *.ps1; do
+for f in *.sh *.ps1 *.yml; do
   [ -f "$f" ] || continue
   # repo path: staging-vite → dist_vite
   sed -i '' 's|lmlight-app/staging-vite|lmlight-app/dist_vite|g' "$f"

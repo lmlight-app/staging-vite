@@ -55,7 +55,8 @@ mkdir -p "$INSTALL_DIR" "$INSTALL_DIR/files" "$INSTALL_DIR/postgres-data"
 
 if [ ! -f "$INSTALL_DIR/.env" ]; then
     JWT_SECRET=$(openssl rand -hex 32 2>/dev/null || date +%s%N | sha256sum | cut -c1-64)
-    OAUTH_ENCRYPTION_KEY=$(openssl rand -hex 32 2>/dev/null || date +%s%N | sha256sum | cut -c1-64)
+    # Fernet 鍵 = url-safe base64 の 32 byte (44 文字)。hex では Fernet が受けない (アプリ側は派生して受けるが形式は揃える)
+    OAUTH_ENCRYPTION_KEY=$(openssl rand -base64 32 2>/dev/null | tr '+/' '-_' || head -c 32 /dev/urandom | base64 | tr '+/' '-_')
     cat > "$INSTALL_DIR/.env" << EOF
 LLM_BACKEND=$EDITION
 DATABASE_URL=postgresql://${DB_USER}:${DB_PASS}@$PG_CONTAINER:5432/${DB_NAME}
