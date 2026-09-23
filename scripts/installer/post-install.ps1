@@ -438,7 +438,10 @@ $batScript = @"
 @echo off
 if "%1"=="start" powershell -ExecutionPolicy Bypass -File "%LOCALAPPDATA%\db\start.ps1"
 if "%1"=="stop"  powershell -ExecutionPolicy Bypass -File "%LOCALAPPDATA%\db\stop.ps1"
-if "%1"==""      echo Usage: db {start^|stop}
+if "%1"=="worker"  (pushd "%LOCALAPPDATA%\db" && api.exe %* & popd)
+if "%1"=="config"  (pushd "%LOCALAPPDATA%\db" && api.exe %* & popd)
+if "%1"=="version" (pushd "%LOCALAPPDATA%\db" && api.exe --version & popd)
+if "%1"==""      echo Usage: db {start^|stop^|worker [--pool NAME]^|config list^|version}
 "@
 
 Set-Content -Path $startPs1 -Value $startScript -Encoding UTF8

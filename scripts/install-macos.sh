@@ -277,7 +277,10 @@ case "$1" in
     stop)     "$DB_HOME/stop.sh" ;;
     rollback) "$DB_HOME/stop.sh"; rollback_binary && "$DB_HOME/start.sh" ;;
     cleanup)  cleanup_backups "${2:-}" ;;
-    *)        echo "Usage: db {start|stop|rollback|cleanup [--yes]}"; exit 1 ;;
+    worker)   shift; cd "$DB_HOME" && exec ./api worker "$@" ;;
+    config)   shift; cd "$DB_HOME" && exec ./api config "$@" ;;
+    version)  cd "$DB_HOME" && exec ./api --version ;;
+    *)        echo "Usage: db {start|stop|rollback|cleanup [--yes]|worker [--pool NAME]|config list [--all]|version}"; exit 1 ;;
 esac
 EOF
 chmod +x "$INSTALL_DIR/db"

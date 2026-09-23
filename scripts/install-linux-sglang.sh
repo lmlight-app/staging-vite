@@ -666,15 +666,19 @@ cleanup_backups() {
 if [ -f /etc/systemd/system/db.service ] && [ -d /run/systemd/system ]; then
     SCTL="systemctl"; JCTL="journalctl"
     [ "$(id -u)" -ne 0 ] && command -v sudo &>/dev/null && { SCTL="sudo systemctl"; JCTL="sudo journalctl"; }
+    RUN=""; [ "$(id -u)" -ne 0 ] && command -v sudo &>/dev/null && RUN="sudo"   # worker / config は service と同じ root で (.env を読む)
     case "$1" in
         start)    $SCTL start db ;;
         stop)     $SCTL stop db ;;
         restart)  $SCTL restart db ;;
         rollback) $SCTL stop db && rollback_binary && $SCTL start db ;;
         cleanup)  cleanup_backups "${2:-}" ;;
+        worker)   shift; cd "$DB_HOME" && exec $RUN ./api worker "$@" ;;
+        config)   shift; cd "$DB_HOME" && exec $RUN ./api config "$@" ;;
+        version)  cd "$DB_HOME" && exec ./api --version ;;
         status)   $SCTL status db --no-pager ;;
         logs)     $JCTL -u db -f ;;
-        *)        echo "Usage: db {start|stop|restart|rollback|cleanup [--yes]|status|logs}"; exit 1 ;;
+        *)        echo "Usage: db {start|stop|restart|rollback|cleanup [--yes]|status|logs|worker [--pool NAME]|config list [--all]|version}"; exit 1 ;;
     esac
     exit $?
 fi
@@ -683,7 +687,10 @@ case "$1" in
     stop)     "$DB_HOME/stop.sh" ;;
     rollback) "$DB_HOME/stop.sh"; rollback_binary && "$DB_HOME/start.sh" ;;
     cleanup)  cleanup_backups "${2:-}" ;;
-    *)        echo "Usage: db {start|stop|rollback|cleanup [--yes]}"; exit 1 ;;
+    worker)   shift; cd "$DB_HOME" && exec ./api worker "$@" ;;
+    config)   shift; cd "$DB_HOME" && exec ./api config "$@" ;;
+    version)  cd "$DB_HOME" && exec ./api --version ;;
+    *)        echo "Usage: db {start|stop|rollback|cleanup [--yes]|worker [--pool NAME]|config list [--all]|version}"; exit 1 ;;
 esac
 EOF
 chmod +x "$INSTALL_DIR/db"
