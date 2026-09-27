@@ -7,6 +7,12 @@
 
 set -e
 
+if [ -z "$HOME" ] || [ ! -d "$HOME" ]; then
+    HOME="$(getent passwd "$(id -u)" 2>/dev/null | cut -d: -f6)"
+    [ -n "$HOME" ] || HOME="/root"
+    export HOME
+fi
+
 INSTALL_DIR="${DB_INSTALL_DIR:-$HOME/.local/db}"
 MODEL_DIR="${INSTALL_DIR}/stt-model/whisper"
 ENV_FILE="${INSTALL_DIR}/.env"
@@ -141,14 +147,13 @@ if [ -e "$MODEL_FILE" ]; then
     exit 0
 fi
 
-# Remove old model files (different model / format)
-if [ -d "$MODEL_DIR" ]; then
-    echo "既存のモデルを削除..."
-    rm -rf "$MODEL_DIR"
-fi
-
-echo "モデルディレクトリを作成: $MODEL_DIR"
-mkdir -p "$MODEL_DIR"
+# 新しいモデルは作業ディレクトリに取り、揃ってから入れ替える (= 取得に失敗しても既存のモデルを残す)
+STAGE_DIR="${MODEL_DIR}.new"
+rm -rf "$STAGE_DIR"
+mkdir -p "$STAGE_DIR"
+trap 'rm -rf "$STAGE_DIR"' EXIT
+FINAL_FILE="$MODEL_FILE"
+MODEL_FILE="${STAGE_DIR}/$(basename "$FINAL_FILE")"
 
 # ── downloader (curl / wget) ──
 if command -v curl &> /dev/null; then
@@ -175,39 +180,26 @@ else
     done
 fi
 
-# ── .env (printf 使用: echo >> は past incident のため禁止) ──
-set_env() {
-    local key="$1" value="$2"
-    [ -f "$ENV_FILE" ] || return 0
-    if grep -q "^${key}=" "$ENV_FILE"; then
-        sed -i.bak "s|^${key}=.*|${key}=${value}|" "$ENV_FILE"
-        rm -f "${ENV_FILE}.bak"
-    else
-        # 末尾に改行が無い .env に追記すると前の行と連結する (2026-09-10 の本番事故) → 先に改行を補う
-        [ -z "$(tail -c1 "$ENV_FILE")" ] || printf '\n' >> "$ENV_FILE"
-        printf '%s=%s\n' "$key" "$value" >> "$ENV_FILE"
-    fi
-    echo ".envを更新: ${key}=${value}"
-}
-set_env WHISPER_MODEL "$MODEL_NAME"
-[ -n "$LANG_CODE" ] && set_env WHISPER_LANGUAGE "$LANG_CODE"
+if [ ! -e "$MODEL_FILE" ]; then
+    echo "[ERROR] ダウンロードに失敗しました (既存のモデルはそのまま)"
+    exit 1
+fi
 
-# ── faster-whisper (ct2) の pip 導入 ──
+# ── faster-whisper (ct2) の pip 導入 (入れ替えの前に。失敗しても既存のモデルと .env を残す) ──
 if [ "$FORMAT" = "ct2" ]; then
     echo ""
     if ! command -v uv &> /dev/null; then
         echo "uv をインストール中..."
-        curl -LsSf https://astral.sh/uv/install.sh | sh
+        curl -LsSf https://astral.sh/uv/install.sh | env UV_NO_MODIFY_PATH=1 sh
         export PATH="$HOME/.local/bin:$PATH"
     fi
-    cd "$INSTALL_DIR"
     ARCH="$(uname -m)"
     if [ "$GPU_MODE" = true ] && [ "$(uname -s)" = "Linux" ]; then
         echo "faster-whisper + CUDA ライブラリ (cuBLAS / cuDNN 9) をインストール中... (uv sync --extra gpu)"
-        uv sync --extra gpu --quiet
+        uv sync --project "$INSTALL_DIR" --extra gpu --quiet
     else
         echo "faster-whisper をインストール中... (uv sync --extra whisper)"
-        uv sync --extra whisper --quiet
+        uv sync --project "$INSTALL_DIR" --extra whisper --quiet
     fi
     echo "[OK] faster-whisper インストール完了"
     if [ "$GPU_MODE" = true ] && { [ "$ARCH" = "aarch64" ] || [ "$ARCH" = "arm64" ]; } && [ "$(uname -s)" = "Linux" ]; then
@@ -222,23 +214,47 @@ if [ "$FORMAT" = "ct2" ]; then
     fi
 fi
 
-# Verify download
-if [ -e "$MODEL_FILE" ]; then
-    SIZE=$(du -sh "$MODEL_FILE" | awk '{print $1}')
-    echo ""
-    echo "[OK] インストール完了!"
-    echo "   モデル: ${MODEL_NAME} (${FORMAT})"
-    echo "   配置先: $MODEL_FILE"
-    echo "   サイズ: $SIZE"
-    if [ "$FORMAT" = "ct2" ]; then
-        echo "   backend: faster-whisper (CUDA が見えれば GPU、無ければ CPU int8 に自動で落ちる)"
-    else
-        echo "   backend: whisper.cpp (CPU / Apple Silicon は Metal)"
-    fi
-    echo ""
-    echo "[WARN] DigitalBase の再起動が必須です（再起動しないと旧モデルがキャッシュされ 503 になります）"
-    echo "   再起動後、管理画面 → ライセンス → 文字起こし で backend / device を確認できます (GET /api/transcribe)。"
-else
-    echo "[ERROR] ダウンロードに失敗しました"
-    exit 1
+# ── 揃ったので入れ替える (= 以前のモデル・形式は残さない) ──
+if [ -d "$MODEL_DIR" ]; then
+    echo "以前のモデルを削除..."
+    rm -rf "$MODEL_DIR"
 fi
+mv "$STAGE_DIR" "$MODEL_DIR"
+trap - EXIT
+MODEL_FILE="$FINAL_FILE"
+
+# ── .env: 所有者・権限を変えないよう、既存ファイルに上書き (cat >) で書く ──
+set_env() {
+    local key="$1" value="$2" tmp esc
+    [ -f "$ENV_FILE" ] || return 0
+    tmp="$(mktemp)"
+    esc="$(printf '%s' "$value" | sed 's/[&|\\]/\\&/g')"
+    if grep -q "^${key}=" "$ENV_FILE"; then
+        sed "s|^${key}=.*|${key}=${esc}|" "$ENV_FILE" > "$tmp"
+    else
+        cat "$ENV_FILE" > "$tmp"
+        # 末尾に改行が無い .env に追記すると前の行と連結するので、先に改行を補う
+        [ -z "$(tail -c1 "$tmp")" ] || printf '\n' >> "$tmp"
+        printf '%s=%s\n' "$key" "$value" >> "$tmp"
+    fi
+    cat "$tmp" > "$ENV_FILE"
+    rm -f "$tmp"
+    echo ".envを更新: ${key}=${value}"
+}
+set_env WHISPER_MODEL "$MODEL_NAME"
+[ -z "$LANG_CODE" ] || set_env WHISPER_LANGUAGE "$LANG_CODE"
+
+SIZE=$(du -sh "$MODEL_FILE" | awk '{print $1}')
+echo ""
+echo "[OK] インストール完了!"
+echo "   モデル: ${MODEL_NAME} (${FORMAT})"
+echo "   配置先: $MODEL_FILE"
+echo "   サイズ: $SIZE"
+if [ "$FORMAT" = "ct2" ]; then
+    echo "   backend: faster-whisper (CUDA が見えれば GPU、無ければ CPU int8 に自動で落ちる)"
+else
+    echo "   backend: whisper.cpp (CPU / Apple Silicon は Metal)"
+fi
+echo ""
+echo "[WARN] DigitalBase の再起動が必須です（再起動しないと旧モデルがキャッシュされ 503 になります）"
+echo "   再起動後、管理画面 → ライセンス → 文字起こし で backend / device を確認できます (GET /api/transcribe)。"

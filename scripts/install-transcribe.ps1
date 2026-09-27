@@ -78,15 +78,12 @@ if (-not (Test-Path $InstallDir)) {
     exit 1
 }
 
-# Remove old model files (different model)
-if (Test-Path $ModelDir) {
-    Write-Host "既存のモデルを削除..."
-    Remove-Item -Recurse -Force $ModelDir
-}
-
-# Create model directory
-Write-Host "モデルディレクトリを作成: $ModelDir"
-New-Item -ItemType Directory -Force -Path $ModelDir | Out-Null
+# 新しいモデルは作業ディレクトリに取り、揃ってから入れ替える (= 取得に失敗しても既存のモデルを残す)
+$StageDir = "$ModelDir.new"
+if (Test-Path $StageDir) { Remove-Item -Recurse -Force $StageDir }
+New-Item -ItemType Directory -Force -Path $StageDir | Out-Null
+$FinalFile = $ModelFile
+$ModelFile = Join-Path $StageDir (Split-Path $FinalFile -Leaf)
 
 # Download model
 Write-Host "Whisper ${ModelName}モデルをダウンロード中..." -ForegroundColor Yellow
@@ -97,13 +94,29 @@ Write-Host ""
 try {
     $ProgressPreference = 'SilentlyContinue'
     Invoke-WebRequest -Uri $ModelUrl -OutFile $ModelFile -UseBasicParsing
-    $ProgressPreference = 'Continue'
 } catch {
-    Write-Host "[ERROR] ダウンロードに失敗しました: $_" -ForegroundColor Red
+    Write-Host "[ERROR] ダウンロードに失敗しました (既存のモデルはそのまま): $_" -ForegroundColor Red
+    Remove-Item -Recurse -Force $StageDir -ErrorAction SilentlyContinue
     exit 1
+} finally {
+    $ProgressPreference = 'Continue'
 }
 
-# Update .env (WHISPER_MODEL、任意で WHISPER_LANGUAGE)
+# 取得できたら入れ替える (= 以前のモデルは残さない)。本体が動いているとモデルファイルが掴まれて消せない
+try {
+    if (Test-Path $ModelDir) {
+        Write-Host "以前のモデルを削除..."
+        Remove-Item -Recurse -Force $ModelDir
+    }
+    Move-Item $StageDir $ModelDir
+} catch {
+    Write-Host "[ERROR] モデルの入れ替えに失敗しました: $_" -ForegroundColor Red
+    Write-Host "   DigitalBase を停止してから再実行してください (取得済みのファイルは $StageDir に残しています)"
+    exit 1
+}
+$ModelFile = $FinalFile
+
+# Update .env (WHISPER_MODEL、任意で WHISPER_LANGUAGE)。install-windows.ps1 と同じ UTF8 で書く
 function Set-EnvValue([string]$Key, [string]$Value) {
     if (-not (Test-Path $EnvFile)) { return }
     $envContent = Get-Content $EnvFile -Raw
@@ -112,26 +125,19 @@ function Set-EnvValue([string]$Key, [string]$Value) {
     } else {
         $envContent = $envContent.TrimEnd() + "`n$Key=$Value"
     }
-    Set-Content -Path $EnvFile -Value $envContent.TrimEnd() -NoNewline
-    Add-Content -Path $EnvFile -Value ""
+    Set-Content -Path $EnvFile -Value ($envContent.TrimEnd() + "`n") -NoNewline -Encoding UTF8
     Write-Host ".envを更新: $Key=$Value"
 }
 Set-EnvValue "WHISPER_MODEL" $ModelName
 if ($Lang) { Set-EnvValue "WHISPER_LANGUAGE" $Lang }
 
-# Verify download
-if (Test-Path $ModelFile) {
-    $Size = (Get-Item $ModelFile).Length / 1MB
-    $SizeStr = "{0:N1} MB" -f $Size
-    Write-Host ""
-    Write-Host "[OK] インストール完了!" -ForegroundColor Green
-    Write-Host "   モデル: $ModelName (whisper.cpp)"
-    Write-Host "   ファイル: $ModelFile"
-    Write-Host "   サイズ: $SizeStr"
-    Write-Host ""
-    Write-Host "[WARN] DigitalBase の再起動が必須です（再起動しないと旧モデルがキャッシュされ 503 になります）" -ForegroundColor Yellow
-    Write-Host "   再起動後、管理画面 → ライセンス → 文字起こし で確認できます" -ForegroundColor Cyan
-} else {
-    Write-Host "[ERROR] ダウンロードに失敗しました" -ForegroundColor Red
-    exit 1
-}
+$Size = (Get-Item $ModelFile).Length / 1MB
+$SizeStr = "{0:N1} MB" -f $Size
+Write-Host ""
+Write-Host "[OK] インストール完了!" -ForegroundColor Green
+Write-Host "   モデル: $ModelName (whisper.cpp)"
+Write-Host "   ファイル: $ModelFile"
+Write-Host "   サイズ: $SizeStr"
+Write-Host ""
+Write-Host "[WARN] DigitalBase の再起動が必須です（再起動しないと旧モデルがキャッシュされ 503 になります）" -ForegroundColor Yellow
+Write-Host "   再起動後、管理画面 → ライセンス → 文字起こし で確認できます" -ForegroundColor Cyan
