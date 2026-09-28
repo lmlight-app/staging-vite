@@ -9,6 +9,8 @@
 #   curl -fsSL .../install-media.sh | bash -s -- --video Wan-AI/Wan2.1-T2V-1.3B-Diffusers --gpu 1
 #   curl -fsSL .../install-media.sh | bash -s -- --remove image
 #
+# 起動オプション (FP8・CPU 退避・VAE 分割) はモデルの大きさと GPU メモリから自動で決める。
+#
 # 環境変数: DB_INSTALL_DIR (本体の配置先、既定は db.service の WorkingDirectory、無ければ ~/.local/db)
 #           DB_SERVICE_USER (unit の User=、既定は db.service の User=)
 #           HF_HOME (モデルの置き場。既定は .env の HF_HOME、無ければ <db ユーザーの HOME>/.cache/huggingface)
@@ -33,6 +35,7 @@ show_usage() {
   --image <model>       画像生成サーバーを入れる (db-media-image.service、既定ポート 8092)
   --video <model>       動画生成サーバーを入れる (db-media-video.service、既定ポート 8093)
   --gpu N               使う GPU 番号 (CUDA_VISIBLE_DEVICES=N)。省略時はチャットと同じ GPU 0 を共有
+                        (起動オプションは、指定した GPU は搭載メモリ、共有の GPU 0 は空きメモリで決める)
   --port P              待ち受けポート (127.0.0.1 のみ)
   --version X.Y.Z       vllm / vllm-omni の版。既定は本体 venv の vllm と同じ版
   --omni-version X.Y.Z  vllm-omni の版だけを別に指定する (既定は --version と同じ)
@@ -366,7 +369,8 @@ HF_TOKEN="${HF_TOKEN:-$(env_get HF_TOKEN || true)}"
 # 起動し、環境はこのインストーラーが同じ引数で先に作っておく (下の「事前準備」)
 UVX_ARGS=(--python 3.12 --from "vllm-omni==$OMNI_VERSION" --with "vllm==$VERSION")
 
-UNIT_CONTENT="[Unit]
+unit_content() {
+    printf '%s\n' "[Unit]
 Description=DB Media ${KIND} generation (vLLM-Omni)
 After=network-online.target
 After=db.service
@@ -376,7 +380,7 @@ Wants=network-online.target
 Type=simple
 User=$DB_USER
 WorkingDirectory=$INSTALL_DIR
-ExecStart=$UVX --offline ${UVX_ARGS[*]} vllm-omni serve $MODEL --omni --host 127.0.0.1 --port $PORT
+ExecStart=$UVX --offline ${UVX_ARGS[*]} vllm-omni serve $MODEL --omni --host 127.0.0.1 --port $PORT${SERVE_ARGS:+ $SERVE_ARGS}
 Restart=on-failure
 RestartSec=10
 TimeoutStopSec=60
@@ -387,14 +391,16 @@ ${GPU:+Environment=CUDA_VISIBLE_DEVICES=$GPU
 
 [Install]
 WantedBy=multi-user.target"
+}
+SERVE_ARGS=""
 
 if [ "$DRY_RUN" -eq 1 ]; then
     echo ""
     echo "[dry-run] db ユーザー: $DB_USER (HOME=$DB_HOME)、配置先: $INSTALL_DIR"
     echo "[dry-run] 事前準備: UV_CACHE_DIR=$UV_CACHE $UVX ${UVX_ARGS[*]} vllm-omni --help (その後 --offline で再確認)"
     echo "[dry-run] モデル取得: snapshot_download($MODEL) → HF_HOME=$HF_HOME_VAL${HF_TOKEN:+ (HF_TOKEN あり)}"
-    echo "[dry-run] $UNIT_PATH:"
-    printf '%s\n' "$UNIT_CONTENT" | sed 's/^/    /'
+    echo "[dry-run] $UNIT_PATH (起動オプションは取得後にモデルの大きさと GPU メモリから自動で付く):"
+    unit_content | sed 's/^/    /'
     echo "[dry-run] $SUDOERS_FILE (root:root 0440、visudo -cf で検証してから配置):"
     sudoers_content "$DB_USER" "$(systemctl_path)" | sed 's/^/    /'
     echo "[dry-run] .env: ${ENV_PREFIX}_BASE_URL=http://127.0.0.1:${PORT}/v1 (${ENV_PREFIX}_MODEL / ${ENV_PREFIX}_API は削除)"
@@ -457,6 +463,18 @@ if ! as_db_user UV_CACHE_DIR="$UV_CACHE" "$UVX" --offline "${UVX_ARGS[@]}" vllm-
 fi
 echo "[OK] vLLM-Omni の実行環境 (キャッシュ: $UV_CACHE)"
 
+# ── 置き場所の空き容量 (= 取得途中で disk full にしない) ──
+REPO_BYTES="$(as_db_user HF_HOME="$HF_HOME_VAL" UV_CACHE_DIR="$UV_CACHE" "$UV" run --no-project --python 3.12 --with huggingface_hub \
+    python -c 'import sys; from huggingface_hub import HfApi; print(sum(f.size or 0 for f in HfApi().model_info(sys.argv[1], files_metadata=True).siblings or []))' \
+    "$MODEL" 2>/dev/null || true)"
+[ -d "$HF_HOME_VAL" ] || $SUDO install -d -o "$DB_USER" -g "$(id -gn "$DB_USER")" "$HF_HOME_VAL"
+FREE_BYTES="$(df -PB1 "$HF_HOME_VAL" 2>/dev/null | awk 'NR==2 {print $4}')"
+if [ -n "$REPO_BYTES" ] && [ -n "$FREE_BYTES" ] && [ "$REPO_BYTES" -gt "$FREE_BYTES" ]; then
+    echo "[ERROR] モデルの置き場所の空きが足りません: 必要 $((REPO_BYTES / 1073741824)) GB / 空き $((FREE_BYTES / 1073741824)) GB ($HF_HOME_VAL)"
+    echo "   不要なモデルを消すか、HF_HOME=<空きのあるディレクトリ> を付けて再実行してください。"
+    exit 1
+fi
+
 # ── モデルの事前ダウンロード (全ファイル。後でオフラインでも起動できるように) ──
 echo "モデルをダウンロード中: $MODEL (HF_HOME=$HF_HOME_VAL)"
 if ! as_db_user HF_HOME="$HF_HOME_VAL" UV_CACHE_DIR="$UV_CACHE" HF_HUB_DISABLE_PROGRESS_BARS=1 \
@@ -472,9 +490,65 @@ then
     exit 1
 fi
 
+# ── 起動オプション: 常駐する重み (読み込み時の BF16 換算) が GPU メモリに収まるかで決める ──
+# 指定した GPU は搭載メモリ、共有する GPU 0 はチャットが使っている分を除いた空きメモリで見る
+if [ -n "$GPU" ]; then
+    GPU_MIB="$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits -i "${GPU%%,*}" 2>/dev/null | head -1 | tr -d ' ')"
+else
+    GPU_MIB="$(nvidia-smi --query-gpu=memory.free --format=csv,noheader,nounits -i 0 2>/dev/null | head -1 | tr -d ' ')"
+fi
+PLAN="$(as_db_user HF_HOME="$HF_HOME_VAL" UV_CACHE_DIR="$UV_CACHE" HF_HUB_OFFLINE=1 "$UV" run --no-project --python 3.12 --with huggingface_hub \
+        python - "$MODEL" "${GPU_MIB:-0}" "$KIND" <<'PY'
+import json, os, struct, sys
+from huggingface_hub import snapshot_download
+
+model, gpu_mib, kind = sys.argv[1], int(sys.argv[2] or 0), sys.argv[3]
+root = snapshot_download(model)
+# 読み込み時の大きさ (FP32 で配られた重みは BF16 で読むので半分)
+WIDTH = {"F32": 2, "F64": 4, "BF16": 2, "F16": 2, "F8_E4M3": 1, "F8_E5M2": 1, "I8": 1, "U8": 1}
+
+
+def loaded_bytes(path):
+    with open(path, "rb") as f:
+        header = json.loads(f.read(struct.unpack("<Q", f.read(8))[0]))
+    total = 0
+    for name, meta in header.items():
+        if name == "__metadata__":
+            continue
+        count = 1
+        for dim in meta["shape"]:
+            count *= dim
+        total += count * min(WIDTH.get(meta["dtype"], 2), 2)
+    return total
+
+
+parts = {}
+for dirpath, _, files in os.walk(root):
+    for name in files:
+        if name.endswith(".safetensors"):
+            top = os.path.relpath(dirpath, root).split(os.sep)[0]
+            parts[top] = parts.get(top, 0) + loaded_bytes(os.path.join(dirpath, name))
+resident = sum(parts.values())
+dit = sum(v for k, v in parts.items() if k.startswith("transformer"))
+# 生成中の作業領域を 2 割残す
+budget = gpu_mib * 1024 * 1024 * 0.8
+args = []
+if gpu_mib and resident > budget:
+    args.append("--diffusion-quantization-config '{\"method\":\"fp8\"}'")
+    if resident - dit / 2 > budget:
+        args.append("--enable-cpu-offload")
+if kind == "video":
+    args.append("--vae-use-tiling")
+gib = 1024 ** 3
+print(f"{resident / gib:.1f}\t{gpu_mib / 1024:.1f}\t{' '.join(args)}")
+PY
+)" || { echo "[ERROR] 取得したモデルを読めませんでした: $MODEL"; exit 1; }
+IFS=$'\t' read -r RESIDENT_GIB GPU_GIB SERVE_ARGS <<< "${PLAN##*$'\n'}"   # 最後の行 (= 前に出る警告文を拾わない)
+echo "[INFO] 重み ${RESIDENT_GIB} GB / GPU ${GPU_GIB} GB → 起動オプション: ${SERVE_ARGS:-(なし)}"
+
 # ── systemd unit ──
 UNIT_TMP="$(mktemp)"
-printf '%s\n' "$UNIT_CONTENT" > "$UNIT_TMP"
+unit_content > "$UNIT_TMP"
 $SUDO install -o root -g root -m 644 "$UNIT_TMP" "$UNIT_PATH"
 $SUDO systemctl daemon-reload
 $SUDO systemctl enable "$UNIT_NAME" >/dev/null
@@ -495,6 +569,7 @@ echo " ${LABEL}サーバーをインストールしました。"
 echo "   model:   $MODEL"
 echo "   url:     http://127.0.0.1:${PORT}/v1"
 echo "   service: $UNIT_NAME${GPU:+ (GPU $GPU)}"
+echo "   options: ${SERVE_ARGS:-(なし)}"
 echo ""
 echo " モデルの読み込みに数分かかります。状態は管理画面の"
 echo " 「モデル管理 → 補助サーバー」で確認できます (ログ: journalctl -u ${UNIT_NAME%.service} -f)。"
