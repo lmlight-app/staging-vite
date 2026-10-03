@@ -21,15 +21,13 @@ WHEELHOUSE="${DB_WHEELHOUSE:-}"
 SGLANG_VERSION="${DB_SGLANG_VERSION:-}"
 UV_VERSION="${DB_UV_VERSION:-}"
 TORCH_INDEX="${DB_TORCH_INDEX:-}"
-SGLANG_VERSION_DEFAULT="latest"
-UV_VERSION_DEFAULT="latest"
 UV_MIN_VERSION="0.12.1"
 usage() {
     cat << 'USAGE'
 Usage: install-linux-sglang.sh [--sglang-version X.Y.Z] [--uv-version X.Y.Z] [--torch-index URL] [--offline --wheelhouse DIR] [--version VERSION]
-  --sglang-version  SGLang: latest | X.Y.Z        (default: "sglang_version" in latest.json; env DB_SGLANG_VERSION)
-  --uv-version    uv: latest | X.Y.Z             (default: "uv_version" in latest.json, else latest; env DB_UV_VERSION)
-  --torch-index   PyTorch wheel index URL (default: "torch_index" in latest.json; empty = uv --torch-backend=auto)
+  --sglang-version  SGLang: latest | nightly | X.Y.Z   (default: the version recorded in this host's venv, else latest; env DB_SGLANG_VERSION)
+  --uv-version    uv: latest | X.Y.Z             (default: latest; env DB_UV_VERSION)
+  --torch-index   PyTorch wheel index URL (default: empty = uv --torch-backend=auto; env DB_TORCH_INDEX)
   --version       DigitalBase version to install: latest | YY.MMDD[.N] | xYYYYMMDD[.N][-linux] (default: latest; env DB_VERSION)
   --offline       no network: binary / checksum / uv / wheels are taken from --wheelhouse DIR
   --wheelhouse    directory with the pre-staged files (env DB_WHEELHOUSE). See "Offline install" in README
@@ -77,7 +75,7 @@ offline_manifest() {
 Pre-stage the following files in ${WHEELHOUSE:-<wheelhouse DIR>} (fetch on an online machine with the same arch / CUDA):
   $BINARY_NAME             backend binary      $BASE_URL/$BINARY_NAME
   $BINARY_NAME.sha256      checksum            $BASE_URL/$BINARY_NAME.sha256
-  latest.json              version manifest    $BASE_URL/latest.json   (optional if --sglang-version is given)
+  latest.json              version manifest    $BASE_URL/latest.json   (optional: records the app version)
   uv                       uv binary $UV_VERSION  https://github.com/astral-sh/uv/releases (uv-<arch>-unknown-linux-gnu.tar.gz, extract 'uv')
   *.whl                    wheels:  pip download "sglang==${SGLANG_VERSION:-<version>}" --dest . [--extra-index-url <torch index>]
   hf-cache.tar             (optional) tar of ~/.cache/huggingface holding the models to serve
@@ -142,14 +140,12 @@ verify_sha256() {
 
 install_binary() {
     chmod +x "$INSTALL_DIR/api.new"
-    if [ -f "$INSTALL_DIR/api" ]; then
-        rm -f "$INSTALL_DIR/api.prev"
-        ln -f "$INSTALL_DIR/api" "$INSTALL_DIR/api.prev" 2>/dev/null || cp -f "$INSTALL_DIR/api" "$INSTALL_DIR/api.prev"
-    fi
     mv -f "$INSTALL_DIR/api.new" "$INSTALL_DIR/api"
-    log "[OK] binary installed (previous kept as api.prev for 'db rollback')"
+    # 退避物 (api.prev / venv.prev 等) が残っていれば片付ける (= 前の版へは版を指定したインストールで戻す)
+    rm -rf "$INSTALL_DIR/api.prev" "$INSTALL_DIR/api.rollback" "$INSTALL_DIR/VERSION.prev" "$INSTALL_DIR/VERSION.rollback" \
+           "$INSTALL_DIR/venv.prev" "$INSTALL_DIR/venv.rollback" "$INSTALL_DIR/venv.new"
+    log "[OK] binary installed"
     if [ -n "$TARGET_VERSION" ]; then
-        [ -f "$INSTALL_DIR/VERSION" ] && cp -f "$INSTALL_DIR/VERSION" "$INSTALL_DIR/VERSION.prev"
         printf '%s\n' "$TARGET_VERSION" > "$INSTALL_DIR/VERSION"
     fi
 }
@@ -163,27 +159,20 @@ else
         || log "[WARN] Could not fetch $BASE_URL/latest.json"
 fi
 manifest_get() { sed -n "s/.*\"$1\" *: *\"\([^\"]*\)\".*/\1/p" "$MANIFEST_FILE" 2>/dev/null | head -1; }
-[ -n "$SGLANG_VERSION" ] || SGLANG_VERSION="$(manifest_get sglang_version)"
-[ -n "$UV_VERSION" ] || UV_VERSION="$(manifest_get uv_version)"
-[ -n "$TORCH_INDEX" ] || TORCH_INDEX="$(manifest_get torch_index)"
-if [ -z "$UV_VERSION" ]; then
-    log "[WARN] latest.json has no \"uv_version\"; using bundled default uv $UV_VERSION_DEFAULT"
-    UV_VERSION="$UV_VERSION_DEFAULT"
+# 推論エンジンの版: 指定 (--sglang-version / 管理画面の「版を変更」) > この機械の venv に記録した版 > latest
+if [ -z "$SGLANG_VERSION" ] && [ "$(cat "$INSTALL_DIR/venv/.db-edition" 2>/dev/null)" = "sglang" ]; then
+    SGLANG_VERSION="$(cat "$INSTALL_DIR/venv/.db-engine-spec" 2>/dev/null)"
 fi
-if [ -z "$SGLANG_VERSION" ]; then
-    log "[WARN] latest.json has no \"sglang_version\"; using bundled default SGLang $SGLANG_VERSION_DEFAULT (override: --sglang-version latest|nightly|X.Y.Z)"
-    SGLANG_VERSION="$SGLANG_VERSION_DEFAULT"
-fi
+SGLANG_VERSION="${SGLANG_VERSION:-latest}"
+UV_VERSION="${UV_VERSION:-latest}"
 log "[UPDATE] target: app $(manifest_get version), SGLang $SGLANG_VERSION, uv $UV_VERSION, torch index ${TORCH_INDEX:-auto}"
 
 [ -n "$TARGET_VERSION" ] || TARGET_VERSION="$(manifest_get version)"
 version_lt() { awk -v a="$1" -v b="$2" 'BEGIN { n = split(a, x, "."); m = split(b, y, "."); k = (n > m) ? n : m
     for (i = 1; i <= k; i++) { p = (i <= n) ? x[i] + 0 : 0; q = (i <= m) ? y[i] + 0 : 0; if (p < q) exit 0; if (p > q) exit 1 } exit 1 }'; }
 INSTALLED_VERSION="$(cat "$INSTALL_DIR/VERSION" 2>/dev/null || true)"
-if [ -n "$TARGET_VERSION" ] && [ -n "$INSTALLED_VERSION" ] && version_lt "$TARGET_VERSION" "$INSTALLED_VERSION" && [ "${DB_ALLOW_DOWNGRADE:-0}" != "1" ]; then
-    echo "[ERROR] $TARGET_VERSION is older than the installed $INSTALLED_VERSION. Data written by the newer version may become unreadable."
-    echo "        Use 'db rollback' to return to the previous version, or set DB_ALLOW_DOWNGRADE=1 to force."
-    exit 1
+if [ -n "$TARGET_VERSION" ] && [ -n "$INSTALLED_VERSION" ] && version_lt "$TARGET_VERSION" "$INSTALLED_VERSION"; then
+    log "[WARN] $TARGET_VERSION is older than the installed $INSTALLED_VERSION. Data written by the newer version may become unreadable."
 fi
 WAS_ACTIVE=0
 if [ -z "$DB_NO_SERVICE" ]; then
@@ -280,29 +269,23 @@ else
 fi
 [ "$DEPS_OK" -eq 1 ] || echo "[WARN] 一部の system 依存 (python3-dev / ffmpeg / tesseract-ocr / ninja-build) を入れられませんでした。機能が失敗する場合は README を参照し手動導入してください。"
 
-VENV="$INSTALL_DIR/venv"; VENV_NEW="$INSTALL_DIR/venv.new"; VENV_PREV="$INSTALL_DIR/venv.prev"
-rm -rf "$VENV_NEW" "$INSTALL_DIR/venv.rollback"
-MIN_FREE_GB="${DB_MIN_FREE_GB:-15}"
-FREE_GB="$(df -Pk "$INSTALL_DIR" 2>/dev/null | awk 'NR==2 {printf "%d", $4/1024/1024}')"
-if [ -n "$FREE_GB" ] && [ "$FREE_GB" -lt "$MIN_FREE_GB" ]; then
-    rm -f "$INSTALL_DIR/api.new"
-    log "[ERROR] Not enough free disk space in $INSTALL_DIR: ${FREE_GB}GB free, ${MIN_FREE_GB}GB required (override: DB_MIN_FREE_GB)"
-    exit 1
-fi
+VENV="$INSTALL_DIR/venv"
+# venv はその場で空から作り直す (= 途中で失敗したら、インストーラをもう一度流せば直る)
+rm -rf "$VENV"
 VENV_ARGS=(--python "$PYTHON_VER")
 [ "$OFFLINE" -eq 1 ] && VENV_ARGS+=(--no-python-downloads)
-if ! uv venv "${VENV_ARGS[@]}" "$VENV_NEW"; then
+if ! uv venv "${VENV_ARGS[@]}" "$VENV"; then
     [ "$OFFLINE" -eq 0 ] || { log "[ERROR] Could not create venv with python$PYTHON_VER (offline: install it on this host)"; exit 1; }
     log "[WARN] uv $(uv --version 2>/dev/null | awk '{print $2}') could not set up python$PYTHON_VER. Upgrading uv to latest and retrying..."
     curl -LsSf https://astral.sh/uv/install.sh | sh
     hash -r
-    rm -rf "$VENV_NEW"
-    uv venv "${VENV_ARGS[@]}" "$VENV_NEW" || { log "[ERROR] Could not create venv with python$PYTHON_VER"; exit 1; }
+    rm -rf "$VENV"
+    uv venv "${VENV_ARGS[@]}" "$VENV" || { log "[ERROR] Could not create venv with python$PYTHON_VER"; exit 1; }
 fi
-echo "sglang" > "$VENV_NEW/.db-edition"
-echo "$SGLANG_VERSION" > "$VENV_NEW/.db-engine-spec"
+echo "sglang" > "$VENV/.db-edition"
+echo "$SGLANG_VERSION" > "$VENV/.db-engine-spec"
 
-PIP_ARGS=(--python "$VENV_NEW/bin/python")
+PIP_ARGS=(--python "$VENV/bin/python")
 if [ "$OFFLINE" -eq 1 ]; then
     PIP_ARGS+=(--no-index --find-links "$WHEELHOUSE")
 elif [ -n "$TORCH_INDEX" ]; then
@@ -317,16 +300,16 @@ install_engine() {
         *)      uv pip install "${PIP_ARGS[@]}" "sglang[all]==$SGLANG_VERSION" ;;
     esac
 }
-venv_fail() { log "[ERROR] $1 (nothing was changed: current binary and venv keep running)"; rm -rf "$VENV_NEW" "$INSTALL_DIR/api.new"; exit 1; }
+venv_fail() { log "[ERROR] $1 (run the installer again to retry)"; rm -f "$INSTALL_DIR/api.new"; exit 1; }
 log "Installing SGLang $SGLANG_VERSION..."
 install_engine || venv_fail "SGLang install failed"
 
-if ! "$VENV_NEW/bin/python" -c "import torchaudio" >/dev/null 2>&1; then
+if ! "$VENV/bin/python" -c "import torchaudio" >/dev/null 2>&1; then
     log "[WARN] torchaudio is unusable (CUDA build mismatch with torch); removing it. Audio-input models will not be available."
-    uv pip uninstall --python "$VENV_NEW/bin/python" torchaudio >/dev/null 2>&1 || true
+    uv pip uninstall --python "$VENV/bin/python" torchaudio >/dev/null 2>&1 || true
 fi
-"$VENV_NEW/bin/python" -c "import sglang" >/dev/null 2>&1 || venv_fail "sglang is not importable after install"
-SGLANG_INSTALLED="$("$VENV_NEW/bin/python" -c "import importlib.metadata as m; print(m.version('sglang'))" 2>/dev/null || true)"
+"$VENV/bin/python" -c "import sglang" >/dev/null 2>&1 || venv_fail "sglang is not importable after install"
+SGLANG_INSTALLED="$("$VENV/bin/python" -c "import importlib.metadata as m; print(m.version('sglang'))" 2>/dev/null || true)"
 case "$SGLANG_VERSION" in
     latest|nightly) ;;
     *) [ "$SGLANG_INSTALLED" = "$SGLANG_VERSION" ] || venv_fail "SGLang $SGLANG_INSTALLED is installed, expected $SGLANG_VERSION" ;;
@@ -334,10 +317,10 @@ esac
 log "[OK] SGLang $SGLANG_INSTALLED"
 
 if [ "$OFFLINE" -eq 0 ]; then
-    TORCH_CUDA="$("$VENV_NEW/bin/python" -c "import torch; print((torch.version.cuda or '').replace('.', ''))" 2>/dev/null || true)"
-    FI_VER="$("$VENV_NEW/bin/python" -c "import importlib.metadata as m; print(m.version('flashinfer-python'))" 2>/dev/null || true)"
+    TORCH_CUDA="$("$VENV/bin/python" -c "import torch; print((torch.version.cuda or '').replace('.', ''))" 2>/dev/null || true)"
+    FI_VER="$("$VENV/bin/python" -c "import importlib.metadata as m; print(m.version('flashinfer-python'))" 2>/dev/null || true)"
     if [ -n "$TORCH_CUDA" ] && [ -n "$FI_VER" ]; then
-        if uv pip install --python "$VENV_NEW/bin/python" --index-url "https://flashinfer.ai/whl/cu${TORCH_CUDA}/" \
+        if uv pip install --python "$VENV/bin/python" --index-url "https://flashinfer.ai/whl/cu${TORCH_CUDA}/" \
                "flashinfer-jit-cache==$FI_VER" >/dev/null 2>&1; then
             log "[OK] FlashInfer prebuilt kernels (flashinfer-jit-cache $FI_VER, cu${TORCH_CUDA})"
         else
@@ -346,12 +329,7 @@ if [ "$OFFLINE" -eq 0 ]; then
     fi
 fi
 
-# api → api.prev / venv → venv.prev、api.new → api / venv.new → venv
 install_binary
-rm -rf "$VENV_PREV"
-[ -d "$VENV" ] && mv "$VENV" "$VENV_PREV"
-mv "$VENV_NEW" "$VENV"
-log "[OK] venv swapped (previous kept as venv.prev for 'db rollback')"
 
 if [ "$OFFLINE" -eq 1 ] && [ -f "$WHEELHOUSE/hf-cache.tar" ]; then
     HF_DIR="${HF_HOME:-$HOME/.cache/huggingface}"
@@ -359,6 +337,7 @@ if [ "$OFFLINE" -eq 1 ] && [ -f "$WHEELHOUSE/hf-cache.tar" ]; then
     log "[OK] model cache extracted to $HF_DIR"
 fi
 
+echo "Cleaning the package cache (can take about a minute)..."
 uv cache prune >/dev/null 2>&1 || true
 
 echo "[OK] Python venv ready"
@@ -461,7 +440,7 @@ if [ -f .update-requested ]; then
     touch .update-running
     DB_INSTALL_DIR="$(pwd -P)"; export DB_INSTALL_DIR
     if [ -n "$ENGINE_SPEC" ]; then DB_VLLM_VERSION="$ENGINE_SPEC"; DB_SGLANG_VERSION="$ENGINE_SPEC"; export DB_VLLM_VERSION DB_SGLANG_VERSION; fi
-    if [ -n "$PRODUCT_VERSION" ]; then DB_VERSION="$PRODUCT_VERSION"; DB_ALLOW_DOWNGRADE=1; export DB_VERSION DB_ALLOW_DOWNGRADE; fi
+    if [ -n "$PRODUCT_VERSION" ]; then DB_VERSION="$PRODUCT_VERSION"; export DB_VERSION; fi
     echo "$(_ts) [UPDATE] running installer: $UPDATE_URL" >> update.log
     echo "[UPDATE] running installer: $UPDATE_URL"
     RC=1
@@ -479,7 +458,7 @@ if [ -f .update-requested ]; then
         echo "$(_ts) [UPDATE] result: ok" >> update.log
         printf 'result=ok\nexit_code=0\nfinished_at=%s\n' "$(_ts)" > .update-result
     else
-        echo "$(_ts) [UPDATE] result: failed (rc=$RC). Previous binary is api.prev: db rollback" >> update.log
+        echo "$(_ts) [UPDATE] result: failed (rc=$RC). Run the update again" >> update.log
         printf 'result=failed\nexit_code=%s\nfinished_at=%s\n' "$RC" "$(_ts)" > .update-result
     fi
     rm -f .update-installer.sh .update-running
@@ -618,51 +597,6 @@ cat > "$INSTALL_DIR/db" << EOF
 DB_HOME="\${DB_HOME:-$INSTALL_DIR}"
 EOF
 cat >> "$INSTALL_DIR/db" << 'EOF'
-_ts() { date -u +%Y-%m-%dT%H:%M:%SZ; }
-rollback_binary() {
-    if [ ! -f "$DB_HOME/api.prev" ]; then
-        echo "[ERROR] No previous binary to roll back to ($DB_HOME/api.prev not found)"; return 1
-    fi
-    mv -f "$DB_HOME/api" "$DB_HOME/api.rollback" \
-        && mv -f "$DB_HOME/api.prev" "$DB_HOME/api" \
-        && mv -f "$DB_HOME/api.rollback" "$DB_HOME/api.prev" || return 1
-    if [ -f "$DB_HOME/VERSION.prev" ]; then
-        mv -f "$DB_HOME/VERSION" "$DB_HOME/VERSION.rollback" 2>/dev/null || true
-        mv -f "$DB_HOME/VERSION.prev" "$DB_HOME/VERSION"
-        [ -f "$DB_HOME/VERSION.rollback" ] && mv -f "$DB_HOME/VERSION.rollback" "$DB_HOME/VERSION.prev"
-    fi
-    if [ -d "$DB_HOME/venv.prev" ]; then
-        mv "$DB_HOME/venv" "$DB_HOME/venv.rollback" \
-            && mv "$DB_HOME/venv.prev" "$DB_HOME/venv" \
-            && mv "$DB_HOME/venv.rollback" "$DB_HOME/venv.prev" \
-            && echo "$(_ts) [ROLLBACK] venv <-> venv.prev swapped" >> "$DB_HOME/update.log" \
-            || echo "[WARN] venv rollback failed (binary rolled back)"
-    fi
-    rm -f "$DB_HOME/.update-requested"
-    printf 'result=rolled_back\nexit_code=0\nfinished_at=%s\n' "$(_ts)" > "$DB_HOME/.update-result"
-    echo "$(_ts) [ROLLBACK] api <-> api.prev swapped" >> "$DB_HOME/update.log"
-    echo "[OK] Rolled back to the previous binary (run 'db rollback' again to undo)"
-}
-
-cleanup_backups() {
-    if [ -f "$DB_HOME/.update-requested" ] || pgrep -f "install-(linux|macos)[^ ]*\.sh" >/dev/null 2>&1; then
-        echo "[ERROR] An update is in progress; run cleanup after it finishes"; return 1
-    fi
-    local targets=() p
-    for p in "$DB_HOME"/api.prev "$DB_HOME"/venv.prev "$DB_HOME"/api.new "$DB_HOME"/venv.new \
-             "$DB_HOME"/api.rollback "$DB_HOME"/venv.rollback "$DB_HOME"/.env.bak-* "$DB_HOME"/*.bak-* "$DB_HOME"/*.bak; do
-        [ -e "$p" ] && targets+=("$p")
-    done
-    if [ ${#targets[@]} -eq 0 ]; then echo "[OK] Nothing to clean up"; return 0; fi
-    du -sh "${targets[@]}" 2>/dev/null
-    if [ "${1:-}" != "--yes" ]; then
-        read -r -p "Delete these? 'db rollback' will no longer be available [y/N] " ans
-        case "$ans" in y|Y|yes|YES) ;; *) echo "Cancelled"; return 1 ;; esac
-    fi
-    rm -rf -- "${targets[@]}"
-    echo "$(_ts) [CLEANUP] removed: ${targets[*]}" >> "$DB_HOME/update.log"
-    echo "[OK] Cleaned up ${#targets[@]} item(s)"
-}
 if [ -f /etc/systemd/system/db.service ] && [ -d /run/systemd/system ]; then
     SCTL="systemctl"; JCTL="journalctl"
     [ "$(id -u)" -ne 0 ] && command -v sudo &>/dev/null && { SCTL="sudo systemctl"; JCTL="sudo journalctl"; }
@@ -671,26 +605,22 @@ if [ -f /etc/systemd/system/db.service ] && [ -d /run/systemd/system ]; then
         start)    $SCTL start db ;;
         stop)     $SCTL stop db ;;
         restart)  $SCTL restart db ;;
-        rollback) $SCTL stop db && rollback_binary && $SCTL start db ;;
-        cleanup)  cleanup_backups "${2:-}" ;;
         worker)   shift; cd "$DB_HOME" && exec $RUN ./api worker "$@" ;;
         config)   shift; cd "$DB_HOME" && exec $RUN ./api config "$@" ;;
         version)  cd "$DB_HOME" && exec ./api --version ;;
         status)   $SCTL status db --no-pager ;;
         logs)     $JCTL -u db -f ;;
-        *)        echo "Usage: db {start|stop|restart|rollback|cleanup [--yes]|status|logs|worker [--pool NAME]|config list [--all]|version}"; exit 1 ;;
+        *)        echo "Usage: db {start|stop|restart|status|logs|worker [--pool NAME]|config list [--all]|version}"; exit 1 ;;
     esac
     exit $?
 fi
 case "$1" in
     start)    "$DB_HOME/start.sh" ;;
     stop)     "$DB_HOME/stop.sh" ;;
-    rollback) "$DB_HOME/stop.sh"; rollback_binary && "$DB_HOME/start.sh" ;;
-    cleanup)  cleanup_backups "${2:-}" ;;
     worker)   shift; cd "$DB_HOME" && exec ./api worker "$@" ;;
     config)   shift; cd "$DB_HOME" && exec ./api config "$@" ;;
     version)  cd "$DB_HOME" && exec ./api --version ;;
-    *)        echo "Usage: db {start|stop|rollback|cleanup [--yes]|worker [--pool NAME]|config list [--all]|version}"; exit 1 ;;
+    *)        echo "Usage: db {start|stop|worker [--pool NAME]|config list [--all]|version}"; exit 1 ;;
 esac
 EOF
 chmod +x "$INSTALL_DIR/db"

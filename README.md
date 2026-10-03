@@ -54,7 +54,7 @@ curl -fsSL https://raw.githubusercontent.com/lmlight-app/staging-vite/main/scrip
 curl -fsSL https://raw.githubusercontent.com/lmlight-app/staging-vite/main/scripts/install-linux-vllm.sh | bash -s -- --version YY.MMDD.N
 ```
 
-入っている版より古い版は拒否されます (新しい版で書かれたデータを読めなくなるため)。直前の版へ戻すだけなら `db rollback`、それでも下げるなら `DB_ALLOW_DOWNGRADE=1`。
+入っている版より古い版も入ります (警告を 1 行出します。新しい版で書かれたデータは読めないことがあります)。途中で失敗した時は、同じコマンドをもう一度実行します。
 ```
 
 ### Docker (vLLM 既定 / Ollama は `| EDITION=ollama bash`)

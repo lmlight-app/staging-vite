@@ -1,136 +1,100 @@
 #!/bin/bash
-# AI Server Docker Installer
-set -e
+# DigitalBase Docker installer (= docker compose の薄い wrapper。構成の正本は docker-compose.yml)
+#
+#   curl -fsSL https://pub-a2cab4360f1748cab5ae1c0f12cddc0a.r2.dev/vite-scripts/install-docker.sh | bash
+#   curl -fsSL .../install-docker.sh | GPU=1 bash           # vLLM も container で同梱 (NVIDIA GPU)
+#   curl -fsSL .../install-docker.sh | APP_PORT=8080 bash   # 初回だけ .env に書く
+#
+# やること: Docker と compose の確認 → compose ファイルを INSTALL_DIR に置く → .env が無ければ雛形から作る → pull → up。
+# 再実行 = 更新 (compose ファイルは最新に差し替え、.env と data/ postgres-data/ はそのまま)。
+set -euo pipefail
 
 INSTALL_DIR="${DB_INSTALL_DIR:-$HOME/digitalbase}"
-EDITION="${EDITION:-vllm}"
-DOCKER_USER="${DOCKER_USER:-lmlight}"
-IMAGE="${DB_IMAGE:-$DOCKER_USER/digitalbase:latest}"
-APP_CONTAINER="${APP_CONTAINER:-digitalbase-app}"
-PG_CONTAINER="${PG_CONTAINER:-digitalbase-postgres}"
-APP_PORT="${APP_PORT:-8000}"
-DB_USER="${DB_USER:-digitalbase}"
-DB_PASS="${DB_PASS:-digitalbase}"
-DB_NAME="${DB_NAME:-digitalbase}"
+BASE_URL="${DB_SCRIPTS_URL:-https://pub-a2cab4360f1748cab5ae1c0f12cddc0a.r2.dev/vite-scripts}"
+GPU="${GPU:-0}"                       # 1 = docker-compose.vllm.yml を重ねる
+EDITION="${EDITION:-}"                # ollama | vllm。空なら GPU=1 の時 vllm、それ以外 ollama (初回の .env にだけ効く)
+APP_PORT="${APP_PORT:-}"              # 初回の .env にだけ効く
+
+[ -z "$EDITION" ] && { [ "$GPU" = "1" ] && EDITION=vllm || EDITION=ollama; }
 
 echo "============================================"
-echo "  AI Server Docker Installer"
+echo "  DigitalBase Docker Installer"
 echo "============================================"
-echo "  edition       : $EDITION"
-echo "  image         : $IMAGE"
-echo "  install dir   : $INSTALL_DIR"
-echo "  port          : $APP_PORT"
+echo "  install dir : $INSTALL_DIR"
+echo "  edition     : $EDITION$([ "$GPU" = "1" ] && echo ' (vLLM を container で同梱)')"
 echo ""
 
-# ── 1. Preflight ────────────────────────────────────────────────────────
+# ── 1. preflight ──────────────────────────────────────────────────────
 command -v docker >/dev/null 2>&1 || {
-    echo "[ERROR] Docker が install されていません"
-    echo "   https://docs.docker.com/get-docker/ から install してください"
+    echo "[ERROR] Docker が install されていません: https://docs.docker.com/get-docker/"
     exit 1
 }
 docker info >/dev/null 2>&1 || {
-    echo "[ERROR] Docker daemon が起動していません"
-    echo "   Linux: sudo systemctl start docker"
-    echo "   Mac/Win: Docker Desktop を起動してください"
+    echo "[ERROR] Docker daemon が起動していません (Linux: sudo systemctl start docker / Mac・Win: Docker Desktop を起動)"
     exit 1
 }
-
-if lsof -i ":$APP_PORT" >/dev/null 2>&1 || ss -tln 2>/dev/null | grep -q ":$APP_PORT "; then
-    echo "[WARN] Port $APP_PORT 既に使用中です。別 port を指定するには APP_PORT=8001 で再実行してください"
-    read -p "  続行しますか? [y/N]: " yn
-    [ "$yn" != "y" ] && exit 1
-fi
-
-# ── 2. Pull image ───────────────────────────────────────────────────────
-echo "Image pull 中..."
-docker pull "$IMAGE" || {
-    echo "[ERROR] Image pull 失敗。確認事項:"
-    echo "   - Docker Hub にアクセスできるか (= proxy / 認証)"
-    echo "   - image 名: $IMAGE"
+docker compose version >/dev/null 2>&1 || {
+    echo "[ERROR] docker compose (v2) がありません: https://docs.docker.com/compose/install/"
     exit 1
 }
+COMPOSE_VER=$(docker compose version --short 2>/dev/null | sed 's/^v//')
+if [ "$(printf '%s\n' "2.24.0" "$COMPOSE_VER" | sort -V | head -1)" != "2.24.0" ]; then
+    echo "[WARN] docker compose $COMPOSE_VER は古い可能性があります (2.24 以降を推奨: .env が無い時の起動に必要)"
+fi
+if [ "$GPU" = "1" ] && ! docker info 2>/dev/null | grep -qi nvidia; then
+    echo "[WARN] NVIDIA Container Toolkit が見つかりません。GPU=1 は nvidia runtime が要ります: https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/"
+fi
 
-# ── 3. Directory + .env setup ──────────────────────────────────────────
-mkdir -p "$INSTALL_DIR" "$INSTALL_DIR/files" "$INSTALL_DIR/postgres-data"
+# ── 2. compose ファイル (常に最新へ差し替え) ───────────────────────────
+mkdir -p "$INSTALL_DIR/data" "$INSTALL_DIR/postgres-data"
+cd "$INSTALL_DIR"
+for f in docker-compose.yml docker-compose.vllm.yml docker.env.example; do
+    curl -fsSL "$BASE_URL/$f" -o "$f.tmp" || { echo "[ERROR] $f を取得できません ($BASE_URL)"; rm -f "$f.tmp"; exit 1; }
+    mv "$f.tmp" "$f"
+done
 
-if [ ! -f "$INSTALL_DIR/.env" ]; then
-    JWT_SECRET=$(openssl rand -hex 32 2>/dev/null || date +%s%N | sha256sum | cut -c1-64)
-    # Fernet 鍵 = url-safe base64 の 32 byte (44 文字)。hex では Fernet が受けない (アプリ側は派生して受けるが形式は揃える)
-    OAUTH_ENCRYPTION_KEY=$(openssl rand -base64 32 2>/dev/null | tr '+/' '-_' || head -c 32 /dev/urandom | base64 | tr '+/' '-_')
-    cat > "$INSTALL_DIR/.env" << EOF
-LLM_BACKEND=$EDITION
-DATABASE_URL=postgresql://${DB_USER}:${DB_PASS}@$PG_CONTAINER:5432/${DB_NAME}
-JWT_SECRET=$JWT_SECRET
-OAUTH_ENCRYPTION_KEY=$OAUTH_ENCRYPTION_KEY
-OLLAMA_BASE_URL=http://host.docker.internal:11434
-VLLM_BASE_URL=http://host.docker.internal:8080
-VLLM_EMBED_BASE_URL=http://host.docker.internal:8081
-FILES_DIR=/app/data/files
-EOF
-    echo "[OK] .env 生成完了: $INSTALL_DIR/.env"
+# ── 3. .env (初回だけ雛形から作る。既存は触らない) ──────────────────────
+if [ ! -f .env ]; then
+    cp docker.env.example .env
+    sed -i.bak "s|^#LLM_BACKEND=.*|LLM_BACKEND=$EDITION|" .env
+    [ -n "$APP_PORT" ] && sed -i.bak "s|^#APP_PORT=.*|APP_PORT=$APP_PORT|" .env
+    rm -f .env.bak
+    echo "[OK] .env を作成: $INSTALL_DIR/.env"
 else
-    echo "[INFO] 既存 .env を保持: $INSTALL_DIR/.env (= 上書きしません)"
+    echo "[INFO] 既存の .env を保持: $INSTALL_DIR/.env"
 fi
+PORT=$(sed -n 's/^APP_PORT=\(.*\)$/\1/p' .env | tail -1)
+PORT="${PORT:-8000}"
 
-# ── 4. Docker network ──────────────────────────────────────────────────
-NETWORK="${DB_NETWORK:-digitalbase-net}"
-docker network inspect "$NETWORK" >/dev/null 2>&1 || docker network create "$NETWORK"
-
-if ! docker ps -a --format '{{.Names}}' | grep -q "^${PG_CONTAINER}$"; then
-    echo "PostgreSQL (pgvector) container 起動..."
-    docker run -d --name "$PG_CONTAINER" --restart unless-stopped \
-        --network "$NETWORK" \
-        -e POSTGRES_USER="$DB_USER" \
-        -e POSTGRES_PASSWORD="$DB_PASS" \
-        -e POSTGRES_DB="$DB_NAME" \
-        -v "$INSTALL_DIR/postgres-data:/var/lib/postgresql/data" \
-        pgvector/pgvector:pg16 >/dev/null
-    echo "   PostgreSQL 起動待機中..."
-    for i in $(seq 1 30); do
-        if docker exec "$PG_CONTAINER" pg_isready -U "$DB_USER" >/dev/null 2>&1; then
-            break
-        fi
-        sleep 1
-    done
-    docker exec "$PG_CONTAINER" psql -U "$DB_USER" -c "CREATE EXTENSION IF NOT EXISTS vector;" >/dev/null 2>&1 || true
-    echo "[OK] PostgreSQL 準備完了"
-else
-    docker start "$PG_CONTAINER" >/dev/null 2>&1 || true
-    echo "[INFO] 既存 PostgreSQL container 利用: $PG_CONTAINER"
-fi
-
-if [ ! -f "$INSTALL_DIR/license.lic" ]; then
-    echo ""
-    echo "ライセンス配置オプション (= 起動後でも upload 可):"
-    echo "   A. 事前配置:  cp <license.lic> $INSTALL_DIR/license.lic"
-    echo "   B. 起動後 UI: http://localhost:$APP_PORT > admin > ライセンス"
-    echo "   C. 起動後 API: POST /api/admin/license -F file=@license.lic"
-    echo ""
-fi
+# ── 4. 起動 (再実行なら更新) ──────────────────────────────────────────
+FILES="-f docker-compose.yml"
+[ "$GPU" = "1" ] && FILES="$FILES -f docker-compose.vllm.yml"
+# shellcheck disable=SC2086
+docker compose $FILES pull
+# shellcheck disable=SC2086
+docker compose $FILES up -d
 
 echo ""
-echo "アプリ container 起動..."
-docker rm -f "$APP_CONTAINER" >/dev/null 2>&1 || true
-docker run -d --name "$APP_CONTAINER" --restart unless-stopped \
-    --network "$NETWORK" \
-    --add-host=host.docker.internal:host-gateway \
-    -p "$APP_PORT:8000" \
-    --env-file "$INSTALL_DIR/.env" \
-    -v "$INSTALL_DIR:/app/data" \
-    "$IMAGE"
+echo -n "起動待ち"
+for i in $(seq 1 60); do
+    if curl -fs -m 3 "http://localhost:$PORT/health" >/dev/null 2>&1; then echo " [OK]"; break; fi
+    echo -n "."; sleep 2
+    [ "$i" = 60 ] && echo " (まだ応答がありません: docker compose logs -f app で確認)"
+done
 
 echo ""
 echo "============================================"
-echo "  [OK] Installation complete"
+echo "  [OK] DigitalBase"
 echo "============================================"
-echo "  URL     : http://localhost:$APP_PORT"
-echo "  env     : $INSTALL_DIR/.env"
-echo "  data    : $INSTALL_DIR/files, $INSTALL_DIR/postgres-data"
+echo "  URL      : http://localhost:$PORT   (admin@local / admin123)"
+echo "  設定     : $INSTALL_DIR/.env"
+echo "  データ   : $INSTALL_DIR/data, $INSTALL_DIR/postgres-data"
+echo "  ライセンス: $INSTALL_DIR/data/license.lic に置く (または 管理画面 > ライセンス から upload)"
 echo ""
-echo "  操作 (素の docker):"
-echo "    docker logs -f $APP_CONTAINER     # ログ"
-echo "    docker stop $APP_CONTAINER        # 停止"
-echo "    docker start $APP_CONTAINER       # 起動"
-echo "    更新   : docker pull $IMAGE → install を再実行 (data 保持)"
-echo "    license: cp <license.lic> $INSTALL_DIR/license.lic && docker restart $APP_CONTAINER"
+echo "  操作 (cd $INSTALL_DIR):"
+echo "    docker compose logs -f app   # ログ"
+echo "    docker compose down          # 停止 (データは残る)"
+echo "    docker compose up -d         # 起動"
+echo "    更新: この installer を再実行 (= pull して up)"
+[ "$GPU" = "1" ] && echo "    GPU 版は docker compose に -f docker-compose.yml -f docker-compose.vllm.yml を付ける"
 echo "============================================"

@@ -1,21 +1,25 @@
-# DigitalBase — docker compose 版 (= install-docker.sh と同じ構成を compose で。読める・差分管理できる・自前の基盤に取り込める)
+# DigitalBase — docker compose (= Docker 配備の正本。これ 1 ファイルで PostgreSQL (pgvector) + アプリが上がる)
 #
-#   mkdir -p digitalbase/data && cd digitalbase
+#   mkdir digitalbase && cd digitalbase
 #   curl -fsSL https://raw.githubusercontent.com/lmlight-app/staging-vite/main/scripts/docker-compose.yml -o docker-compose.yml
-#   cp /path/to/license.lic data/license.lic      # 無ければ起動後に 管理画面 > ライセンス から upload
 #   docker compose up -d
-#   → http://localhost:8000
+#   → http://localhost:8000  (admin@local / admin123。初回ログイン後にパスワードを変える)
 #
-# 変えたい値は同じ dir の .env に書く (compose が読む):
-#   APP_PORT=8000  LLM_BACKEND=ollama|vllm  DB_PASSWORD=...  DB_IMAGE_TAG=latest
-#   OLLAMA_BASE_URL / VLLM_BASE_URL / VLLM_EMBED_BASE_URL (既定はホスト側の各サービス)
-# JWT_SECRET と OAUTH_ENCRYPTION_KEY は未指定なら初回起動時に data/ に生成して永続する (= 作り直しても変わらない)。
-# 固定したい時は app.environment に JWT_SECRET=<長い乱数> を足す。
-# データは全部この dir の下 (data/ = アプリ、postgres-data/ = DB)。バックアップはこの dir ごと。
+# 設定は同じ dir の .env に書く (無くても動く)。雛形:
+#   curl -fsSL https://pub-a2cab4360f1748cab5ae1c0f12cddc0a.r2.dev/vite-scripts/docker.env.example -o .env
+#   APP_PORT / LLM_BACKEND (ollama | vllm) / DB_IMAGE_TAG / DB_PASSWORD のほか、
+#   OPENAI_API_KEY や AUTH_MODE など .env の全行がそのままアプリに渡る。
+# 既存の PostgreSQL / LLM を使う: DATABASE_URL / OLLAMA_BASE_URL / VLLM_BASE_URL / VLLM_EMBED_BASE_URL を .env に書く
+#   (db サービスは消してよい)。既定はホスト側の Ollama (11434) / vLLM (8080, 8081) に繋ぐ。
+# GPU のホストで vLLM も一緒に上げる:  docker compose -f docker-compose.yml -f docker-compose.vllm.yml up -d
 #
-# 更新:   docker compose pull && docker compose up -d
-# 停止:   docker compose down            (データは残る)
-# 削除:   docker compose down -v && rm -rf data postgres-data
+# データ: data/ (ファイル・license.lic・自動生成する鍵)、postgres-data/ (DB)。バックアップはこの dir ごと。
+# ライセンス: data/license.lic に置く (無ければ起動後に 管理画面 > ライセンス から upload)。
+# 更新: docker compose pull && docker compose up -d     停止: docker compose down (データは残る)
+# 削除: docker compose down && sudo rm -rf data postgres-data   (container は root で動くので中のファイルは root 所有)
+# 本番は DB_IMAGE_TAG で版を固定する (latest は更新のたびに動く)。要 Docker Compose v2.24 以降。
+
+name: digitalbase
 
 services:
   db:
@@ -41,14 +45,18 @@ services:
         condition: service_healthy
     ports:
       - "${APP_PORT:-8000}:8000"
+    # .env の全行をアプリに渡す (下の environment が優先 = compose 内の配線は .env で壊れない)
+    env_file:
+      - path: .env
+        required: false
     environment:
       LLM_BACKEND: ${LLM_BACKEND:-ollama}
-      # pgvector 拡張はアプリが起動時に CREATE EXTENSION する (この user は container 内の superuser)
-      DATABASE_URL: postgresql://digitalbase:${DB_PASSWORD:-digitalbase}@db:5432/digitalbase
+      # pgvector 拡張とスキーマはアプリが起動時に作る (この user は container 内の superuser)
+      DATABASE_URL: ${DATABASE_URL:-postgresql://digitalbase:${DB_PASSWORD:-digitalbase}@db:5432/digitalbase}
       OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
       VLLM_BASE_URL: ${VLLM_BASE_URL:-http://host.docker.internal:8080}
       VLLM_EMBED_BASE_URL: ${VLLM_EMBED_BASE_URL:-http://host.docker.internal:8081}
     extra_hosts:
       - "host.docker.internal:host-gateway"   # ホストの Ollama / vLLM に container から届くように
     volumes:
-      - ./data:/app/data                       # files/ license.lic mcp/ .env.jwt_secret
+      - ./data:/app/data

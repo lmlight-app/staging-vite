@@ -110,14 +110,12 @@ verify_sha256() {
 
 install_binary() {
     chmod +x "$INSTALL_DIR/api.new"
-    if [ -f "$INSTALL_DIR/api" ]; then
-        rm -f "$INSTALL_DIR/api.prev"
-        ln -f "$INSTALL_DIR/api" "$INSTALL_DIR/api.prev" 2>/dev/null || cp -f "$INSTALL_DIR/api" "$INSTALL_DIR/api.prev"
-    fi
     mv -f "$INSTALL_DIR/api.new" "$INSTALL_DIR/api"
-    log "[OK] binary installed (previous kept as api.prev for 'db rollback')"
+    # 退避物 (api.prev / venv.prev 等) が残っていれば片付ける (= 前の版へは版を指定したインストールで戻す)
+    rm -rf "$INSTALL_DIR/api.prev" "$INSTALL_DIR/api.rollback" "$INSTALL_DIR/VERSION.prev" "$INSTALL_DIR/VERSION.rollback" \
+           "$INSTALL_DIR/venv.prev" "$INSTALL_DIR/venv.rollback" "$INSTALL_DIR/venv.new"
+    log "[OK] binary installed"
     if [ -n "$TARGET_VERSION" ]; then
-        [ -f "$INSTALL_DIR/VERSION" ] && cp -f "$INSTALL_DIR/VERSION" "$INSTALL_DIR/VERSION.prev"
         printf '%s\n' "$TARGET_VERSION" > "$INSTALL_DIR/VERSION"
     fi
 }
@@ -125,10 +123,8 @@ install_binary() {
 version_lt() { awk -v a="$1" -v b="$2" 'BEGIN { n = split(a, x, "."); m = split(b, y, "."); k = (n > m) ? n : m
     for (i = 1; i <= k; i++) { p = (i <= n) ? x[i] + 0 : 0; q = (i <= m) ? y[i] + 0 : 0; if (p < q) exit 0; if (p > q) exit 1 } exit 1 }'; }
 INSTALLED_VERSION="$(cat "$INSTALL_DIR/VERSION" 2>/dev/null || true)"
-if [ -n "$TARGET_VERSION" ] && [ -n "$INSTALLED_VERSION" ] && version_lt "$TARGET_VERSION" "$INSTALLED_VERSION" && [ "${DB_ALLOW_DOWNGRADE:-0}" != "1" ]; then
-    echo "[ERROR] $TARGET_VERSION is older than the installed $INSTALLED_VERSION. Data written by the newer version may become unreadable."
-    echo "        Use 'db rollback' to return to the previous version, or set DB_ALLOW_DOWNGRADE=1 to force."
-    exit 1
+if [ -n "$TARGET_VERSION" ] && [ -n "$INSTALLED_VERSION" ] && version_lt "$TARGET_VERSION" "$INSTALLED_VERSION"; then
+    log "[WARN] $TARGET_VERSION is older than the installed $INSTALLED_VERSION. Data written by the newer version may become unreadable."
 fi
 WAS_ACTIVE=0
 if [ -z "$DB_NO_SERVICE" ]; then
@@ -265,7 +261,7 @@ if [ -f .update-requested ]; then
         echo "$(_ts) [UPDATE] result: ok" >> update.log
         printf 'result=ok\nexit_code=0\nfinished_at=%s\n' "$(_ts)" > .update-result
     else
-        echo "$(_ts) [UPDATE] result: failed (rc=$RC). Previous binary is api.prev: db rollback" >> update.log
+        echo "$(_ts) [UPDATE] result: failed (rc=$RC). Run the update again" >> update.log
         printf 'result=failed\nexit_code=%s\nfinished_at=%s\n' "$RC" "$(_ts)" > .update-result
     fi
     rm -f .update-installer.sh .update-running
@@ -394,44 +390,6 @@ cat > "$INSTALL_DIR/db" << EOF
 DB_HOME="\${DB_HOME:-$INSTALL_DIR}"
 EOF
 cat >> "$INSTALL_DIR/db" << 'EOF'
-_ts() { date -u +%Y-%m-%dT%H:%M:%SZ; }
-rollback_binary() {
-    if [ ! -f "$DB_HOME/api.prev" ]; then
-        echo "[ERROR] No previous binary to roll back to ($DB_HOME/api.prev not found)"; return 1
-    fi
-    mv -f "$DB_HOME/api" "$DB_HOME/api.rollback" \
-        && mv -f "$DB_HOME/api.prev" "$DB_HOME/api" \
-        && mv -f "$DB_HOME/api.rollback" "$DB_HOME/api.prev" || return 1
-    if [ -f "$DB_HOME/VERSION.prev" ]; then
-        mv -f "$DB_HOME/VERSION" "$DB_HOME/VERSION.rollback" 2>/dev/null || true
-        mv -f "$DB_HOME/VERSION.prev" "$DB_HOME/VERSION"
-        [ -f "$DB_HOME/VERSION.rollback" ] && mv -f "$DB_HOME/VERSION.rollback" "$DB_HOME/VERSION.prev"
-    fi
-    rm -f "$DB_HOME/.update-requested"
-    printf 'result=rolled_back\nexit_code=0\nfinished_at=%s\n' "$(_ts)" > "$DB_HOME/.update-result"
-    echo "$(_ts) [ROLLBACK] api <-> api.prev swapped" >> "$DB_HOME/update.log"
-    echo "[OK] Rolled back to the previous binary (run 'db rollback' again to undo)"
-}
-
-cleanup_backups() {
-    if [ -f "$DB_HOME/.update-requested" ] || pgrep -f "install-(linux|macos)[^ ]*\.sh" >/dev/null 2>&1; then
-        echo "[ERROR] An update is in progress; run cleanup after it finishes"; return 1
-    fi
-    local targets=() p
-    for p in "$DB_HOME"/api.prev "$DB_HOME"/venv.prev "$DB_HOME"/api.new "$DB_HOME"/venv.new \
-             "$DB_HOME"/api.rollback "$DB_HOME"/venv.rollback "$DB_HOME"/.env.bak-* "$DB_HOME"/*.bak-* "$DB_HOME"/*.bak; do
-        [ -e "$p" ] && targets+=("$p")
-    done
-    if [ ${#targets[@]} -eq 0 ]; then echo "[OK] Nothing to clean up"; return 0; fi
-    du -sh "${targets[@]}" 2>/dev/null
-    if [ "${1:-}" != "--yes" ]; then
-        read -r -p "Delete these? 'db rollback' will no longer be available [y/N] " ans
-        case "$ans" in y|Y|yes|YES) ;; *) echo "Cancelled"; return 1 ;; esac
-    fi
-    rm -rf -- "${targets[@]}"
-    echo "$(_ts) [CLEANUP] removed: ${targets[*]}" >> "$DB_HOME/update.log"
-    echo "[OK] Cleaned up ${#targets[@]} item(s)"
-}
 if [ -f /etc/systemd/system/db.service ] && [ -d /run/systemd/system ]; then
     SCTL="systemctl"; JCTL="journalctl"
     [ "$(id -u)" -ne 0 ] && command -v sudo &>/dev/null && { SCTL="sudo systemctl"; JCTL="sudo journalctl"; }
@@ -440,26 +398,22 @@ if [ -f /etc/systemd/system/db.service ] && [ -d /run/systemd/system ]; then
         start)    $SCTL start db ;;
         stop)     $SCTL stop db ;;
         restart)  $SCTL restart db ;;
-        rollback) $SCTL stop db && rollback_binary && $SCTL start db ;;
-        cleanup)  cleanup_backups "${2:-}" ;;
         worker)   shift; cd "$DB_HOME" && exec $RUN ./api worker "$@" ;;
         config)   shift; cd "$DB_HOME" && exec $RUN ./api config "$@" ;;
         version)  cd "$DB_HOME" && exec ./api --version ;;
         status)   $SCTL status db --no-pager ;;
         logs)     $JCTL -u db -f ;;
-        *)        echo "Usage: db {start|stop|restart|rollback|cleanup [--yes]|status|logs|worker [--pool NAME]|config list [--all]|version}"; exit 1 ;;
+        *)        echo "Usage: db {start|stop|restart|status|logs|worker [--pool NAME]|config list [--all]|version}"; exit 1 ;;
     esac
     exit $?
 fi
 case "$1" in
     start)    "$DB_HOME/start.sh" ;;
     stop)     "$DB_HOME/stop.sh" ;;
-    rollback) "$DB_HOME/stop.sh"; rollback_binary && "$DB_HOME/start.sh" ;;
-    cleanup)  cleanup_backups "${2:-}" ;;
     worker)   shift; cd "$DB_HOME" && exec ./api worker "$@" ;;
     config)   shift; cd "$DB_HOME" && exec ./api config "$@" ;;
     version)  cd "$DB_HOME" && exec ./api --version ;;
-    *)        echo "Usage: db {start|stop|rollback|cleanup [--yes]|worker [--pool NAME]|config list [--all]|version}"; exit 1 ;;
+    *)        echo "Usage: db {start|stop|worker [--pool NAME]|config list [--all]|version}"; exit 1 ;;
 esac
 EOF
 chmod +x "$INSTALL_DIR/db"
