@@ -337,9 +337,6 @@ if [ "$OFFLINE" -eq 1 ] && [ -f "$WHEELHOUSE/hf-cache.tar" ]; then
     log "[OK] model cache extracted to $HF_DIR"
 fi
 
-echo "Cleaning the package cache (can take about a minute)..."
-uv cache prune >/dev/null 2>&1 || true
-
 echo "[OK] Python venv ready"
 
 # Vite Edition: frontend is embedded in the API binary, no app.tar.gz needed
