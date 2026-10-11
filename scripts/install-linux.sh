@@ -167,6 +167,15 @@ DB_USER="${DB_USER:-digitalbase}"
 DB_PASS="${DB_PASS:-digitalbase}"
 DB_NAME="${DB_NAME:-digitalbase}"
 
+if [ -f "$INSTALL_DIR/.env" ]; then
+    CURRENT_BACKEND=$(grep -E "^LLM_BACKEND=" "$INSTALL_DIR/.env" | tail -1 | cut -d= -f2)
+    if [ -n "$CURRENT_BACKEND" ] && [ "$CURRENT_BACKEND" != "ollama" ]; then
+        echo ""
+        echo "[WARN] .env は LLM_BACKEND=$CURRENT_BACKEND のままです。この edition を使うには:"
+        echo "       $INSTALL_DIR/.env の LLM_BACKEND を ollama に変更して db restart してください"
+        echo ""
+    fi
+fi
 [ ! -f "$INSTALL_DIR/.env" ] && cat > "$INSTALL_DIR/.env" << EOF
 LLM_BACKEND=ollama
 DATABASE_URL=postgresql://${DB_USER}:${DB_PASS}@localhost:5432/${DB_NAME}
@@ -241,9 +250,11 @@ if [ -f .update-running ] && [ ! -f .update-requested ]; then
 fi
 if [ -f .update-requested ]; then
     UPDATE_URL=$(head -1 .update-requested)
+    PRODUCT_VERSION=$(sed -n 3p .update-requested)
     rm -f .update-requested
     touch .update-running
     DB_INSTALL_DIR="$(pwd -P)"; export DB_INSTALL_DIR
+    if [ -n "$PRODUCT_VERSION" ]; then DB_VERSION="$PRODUCT_VERSION"; export DB_VERSION; fi
     echo "$(_ts) [UPDATE] running installer: $UPDATE_URL" >> update.log
     echo "[UPDATE] running installer: $UPDATE_URL"
     RC=1

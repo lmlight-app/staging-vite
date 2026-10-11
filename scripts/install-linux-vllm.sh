@@ -127,6 +127,8 @@ pg_admin() {
 }
 
 mkdir -p "$INSTALL_DIR"
+{ cat /sys/class/dmi/id/product_uuid 2>/dev/null || { [ -n "$SUDO" ] && $SUDO cat /sys/class/dmi/id/product_uuid 2>/dev/null; }; } > "$INSTALL_DIR/device-id" 2>/dev/null || true
+[ -s "$INSTALL_DIR/device-id" ] || rm -f "$INSTALL_DIR/device-id"
 
 UPDATE_LOG="$INSTALL_DIR/update.log"
 log() { echo "$*"; printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >> "$UPDATE_LOG"; }

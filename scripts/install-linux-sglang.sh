@@ -69,6 +69,11 @@ if [ "$DB_VERSION" != "latest" ]; then
     TARGET_VERSION="$(printf '%s' "$RELEASE_REF" | sed -E 's/^x20([0-9]{2})([0-9]{4})/\1.\2/; s/-[a-z0-9]+$//')"
 fi
 
+recorded() {
+    [ "$(cat "$INSTALL_DIR/venv/.db-edition" 2>/dev/null || true)" = "sglang" ] || return 0
+    cat "$INSTALL_DIR/venv/.db-$1" 2>/dev/null || true
+}
+
 offline_manifest() {
     cat << EOF
 
@@ -115,6 +120,8 @@ pg_admin() {
 }
 
 mkdir -p "$INSTALL_DIR"
+{ cat /sys/class/dmi/id/product_uuid 2>/dev/null || { [ -n "$SUDO" ] && $SUDO cat /sys/class/dmi/id/product_uuid 2>/dev/null; }; } > "$INSTALL_DIR/device-id" 2>/dev/null || true
+[ -s "$INSTALL_DIR/device-id" ] || rm -f "$INSTALL_DIR/device-id"
 
 UPDATE_LOG="$INSTALL_DIR/update.log"
 log() { echo "$*"; printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >> "$UPDATE_LOG"; }
@@ -160,9 +167,7 @@ else
 fi
 manifest_get() { sed -n "s/.*\"$1\" *: *\"\([^\"]*\)\".*/\1/p" "$MANIFEST_FILE" 2>/dev/null | head -1; }
 # 推論エンジンの版: 指定 (--sglang-version / 管理画面の「版を変更」) > この機械の venv に記録した版 > latest
-if [ -z "$SGLANG_VERSION" ] && [ "$(cat "$INSTALL_DIR/venv/.db-edition" 2>/dev/null)" = "sglang" ]; then
-    SGLANG_VERSION="$(cat "$INSTALL_DIR/venv/.db-engine-spec" 2>/dev/null)"
-fi
+[ -n "$SGLANG_VERSION" ] || SGLANG_VERSION="$(recorded engine-spec)"
 SGLANG_VERSION="${SGLANG_VERSION:-latest}"
 UV_VERSION="${UV_VERSION:-latest}"
 log "[UPDATE] target: app $(manifest_get version), SGLang $SGLANG_VERSION, uv $UV_VERSION, torch index ${TORCH_INDEX:-auto}"
@@ -286,33 +291,34 @@ echo "sglang" > "$VENV/.db-edition"
 echo "$SGLANG_VERSION" > "$VENV/.db-engine-spec"
 
 PIP_ARGS=(--python "$VENV/bin/python")
-if [ "$OFFLINE" -eq 1 ]; then
-    PIP_ARGS+=(--no-index --find-links "$WHEELHOUSE")
-elif [ -n "$TORCH_INDEX" ]; then
-    PIP_ARGS+=(--extra-index-url "$TORCH_INDEX")
-else
-    PIP_ARGS+=(--torch-backend=auto)
-fi
+[ "$OFFLINE" -eq 1 ] && PIP_ARGS+=(--no-index --find-links "$WHEELHOUSE")
+venv_fail() { log "[ERROR] $1 (run the installer again to retry)"; rm -f "$INSTALL_DIR/api.new"; exit 1; }
+engine_sources() {
+    SOURCES=()
+    [ "$OFFLINE" -eq 1 ] && return 0
+    if [ -n "$TORCH_INDEX" ]; then SOURCES+=(--extra-index-url "$TORCH_INDEX"); else SOURCES+=(--torch-backend=auto); fi
+    return 0
+}
 [ "$SGLANG_VERSION" = "nightly" ] && { log "[WARN] SGLang has no nightly channel; installing latest instead"; SGLANG_VERSION=latest; }
 install_engine() {
+    engine_sources
     case "$SGLANG_VERSION" in
-        latest) uv pip install -U "${PIP_ARGS[@]}" "sglang[all]" ;;
-        *)      uv pip install "${PIP_ARGS[@]}" "sglang[all]==$SGLANG_VERSION" ;;
+        latest) uv pip install -U "${PIP_ARGS[@]}" "${SOURCES[@]}" "sglang[all]" ;;
+        *)      uv pip install "${PIP_ARGS[@]}" "${SOURCES[@]}" "sglang[all]==$SGLANG_VERSION" ;;
     esac
 }
-venv_fail() { log "[ERROR] $1 (run the installer again to retry)"; rm -f "$INSTALL_DIR/api.new"; exit 1; }
 log "Installing SGLang $SGLANG_VERSION..."
 install_engine || venv_fail "SGLang install failed"
 
 if ! "$VENV/bin/python" -c "import torchaudio" >/dev/null 2>&1; then
-    log "[WARN] torchaudio is unusable (CUDA build mismatch with torch); removing it. Audio-input models will not be available."
+    log "[WARN] torchaudio is unusable (build mismatch with torch); removing it. Audio-input models will not be available."
     uv pip uninstall --python "$VENV/bin/python" torchaudio >/dev/null 2>&1 || true
 fi
 "$VENV/bin/python" -c "import sglang" >/dev/null 2>&1 || venv_fail "sglang is not importable after install"
 SGLANG_INSTALLED="$("$VENV/bin/python" -c "import importlib.metadata as m; print(m.version('sglang'))" 2>/dev/null || true)"
 case "$SGLANG_VERSION" in
     latest|nightly) ;;
-    *) [ "$SGLANG_INSTALLED" = "$SGLANG_VERSION" ] || venv_fail "SGLang $SGLANG_INSTALLED is installed, expected $SGLANG_VERSION" ;;
+    *) [ "$SGLANG_INSTALLED" = "$SGLANG_VERSION" ] || [ "${SGLANG_INSTALLED%%+*}" = "$SGLANG_VERSION" ] || venv_fail "SGLang $SGLANG_INSTALLED is installed, expected $SGLANG_VERSION" ;;
 esac
 log "[OK] SGLang $SGLANG_INSTALLED"
 
