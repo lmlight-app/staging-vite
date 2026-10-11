@@ -72,18 +72,28 @@ if [ "$DB_VERSION" != "latest" ]; then
     TARGET_VERSION="$(printf '%s' "$RELEASE_REF" | sed -E 's/^x20([0-9]{2})([0-9]{4})/\1.\2/; s/-[a-z0-9]+$//')"
 fi
 
+has_amd_discrete_gpu() {
+    [ -e /dev/kfd ] || return 1
+    for f in /sys/class/kfd/kfd/topology/nodes/*/properties; do
+        grep -qs '^simd_count [1-9]' "$f" && ! grep -qs '^cpu_cores_count [1-9]' "$f" && return 0
+    done
+    return 1
+}
 detect_platform() {
     if command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi -L 2>/dev/null | grep -q '^GPU '; then echo cuda
-    elif [ -e /dev/kfd ] && grep -qs '^0x1002$' /sys/class/drm/card*/device/vendor; then echo rocm
+    elif has_amd_discrete_gpu; then echo rocm
     elif command -v xpu-smi >/dev/null 2>&1 && xpu-smi discovery 2>/dev/null | grep -q 'Device ID'; then echo xpu
     else echo cuda; fi
 }
 PLATFORM_FROM="specified"
 if [ -z "$PLATFORM" ] && [ "$(cat "$INSTALL_DIR/venv/.db-edition" 2>/dev/null)" = "vllm" ]; then
-    PLATFORM="$(cat "$INSTALL_DIR/venv/.db-platform" 2>/dev/null)"; PLATFORM_FROM="recorded"
+    PLATFORM="$(cat "$INSTALL_DIR/venv/.db-platform" 2>/dev/null || true)"; PLATFORM_FROM="recorded"
 fi
 [ -n "$PLATFORM" ] || { PLATFORM="$(detect_platform)"; PLATFORM_FROM="detected"; }
 case "$PLATFORM" in cuda|rocm|xpu) ;; *) echo "[ERROR] --platform must be cuda, rocm or xpu (got: $PLATFORM)"; exit 2 ;; esac
+if [ "$PLATFORM_FROM" = "recorded" ] && [ "$PLATFORM" != "$(detect_platform)" ]; then
+    echo "[WARN] this host looks like $(detect_platform) but the previous install was $PLATFORM; pass --platform $(detect_platform) to change"
+fi
 
 offline_manifest() {
     cat << EOF
