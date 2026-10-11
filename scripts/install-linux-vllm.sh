@@ -72,12 +72,12 @@ if [ "$DB_VERSION" != "latest" ]; then
     TARGET_VERSION="$(printf '%s' "$RELEASE_REF" | sed -E 's/^x20([0-9]{2})([0-9]{4})/\1.\2/; s/-[a-z0-9]+$//')"
 fi
 
+recorded() {
+    [ "$(cat "$INSTALL_DIR/venv/.db-edition" 2>/dev/null || true)" = "vllm" ] || return 0
+    cat "$INSTALL_DIR/venv/.db-$1" 2>/dev/null || true
+}
 if [ -z "$PLATFORM" ]; then
-    case "$(cat "$INSTALL_DIR/venv/.db-platform" 2>/dev/null || true)" in
-        rocm) PLATFORM=rocm ;;
-        xpu)  PLATFORM=xpu ;;
-        *)    PLATFORM=cuda ;;
-    esac
+    case "$(recorded platform)" in rocm) PLATFORM=rocm ;; xpu) PLATFORM=xpu ;; *) PLATFORM=cuda ;; esac
 fi
 case "$PLATFORM" in cuda|rocm|xpu) ;; *) echo "[ERROR] --platform must be cuda, rocm or xpu (got: $PLATFORM)"; exit 2 ;; esac
 
@@ -172,9 +172,7 @@ else
 fi
 manifest_get() { sed -n "s/.*\"$1\" *: *\"\([^\"]*\)\".*/\1/p" "$MANIFEST_FILE" 2>/dev/null | head -1; }
 # 推論エンジンの版: 指定 (--vllm-version / 管理画面の「版を変更」) > この機械の venv に記録した版 > latest
-if [ -z "$VLLM_VERSION" ] && [ "$(cat "$INSTALL_DIR/venv/.db-edition" 2>/dev/null)" = "vllm" ]; then
-    VLLM_VERSION="$(cat "$INSTALL_DIR/venv/.db-engine-spec" 2>/dev/null)"
-fi
+[ -n "$VLLM_VERSION" ] || VLLM_VERSION="$(recorded engine-spec)"
 VLLM_VERSION="${VLLM_VERSION:-latest}"
 UV_VERSION="${UV_VERSION:-latest}"
 log "[UPDATE] target: app $(manifest_get version), vLLM $VLLM_VERSION, uv $UV_VERSION, platform $PLATFORM, torch index ${TORCH_INDEX:-auto}"
@@ -301,62 +299,68 @@ echo "$PLATFORM" > "$VENV/.db-platform"
 PIP_ARGS=(--python "$VENV/bin/python")
 [ "$OFFLINE" -eq 1 ] && PIP_ARGS+=(--no-index --find-links "$WHEELHOUSE")
 venv_fail() { log "[ERROR] $1 (run the installer again to retry)"; rm -f "$INSTALL_DIR/api.new"; exit 1; }
-rocm_variant() { curl -fsSL --retry 3 --retry-delay 5 "https://wheels.vllm.ai/rocm/$1/" 2>/dev/null | grep -oE 'rocm[0-9]+' | sort -V | tail -1; }
-engine_index_args() {
+rocm_variant() { curl -fsSL --retry 3 --retry-delay 5 "https://wheels.vllm.ai/rocm/$1/" 2>/dev/null | grep -oE 'rocm[0-9]+' | sort -V | tail -1 || true; }
+pypi_latest_vllm() {
+    curl -fsSL --retry 3 --retry-delay 5 https://pypi.org/pypi/vllm/json 2>/dev/null \
+        | "$VENV/bin/python" -c "import json, sys; print(json.load(sys.stdin)['info']['version'])" 2>/dev/null || true
+}
+engine_sources() {
+    SOURCES=()
     [ "$OFFLINE" -eq 1 ] && return 0
-    case "$PLATFORM" in
-        cuda)
-            if [ -n "$TORCH_INDEX" ]; then INDEX_ARGS+=(--extra-index-url "$TORCH_INDEX"); else INDEX_ARGS+=(--torch-backend=auto); fi
-            [ "$VLLM_VERSION" = "nightly" ] && INDEX_ARGS+=(--extra-index-url https://wheels.vllm.ai/nightly --index-strategy unsafe-best-match)
-            ;;
-        rocm)
-            local variant
-            case "$VLLM_VERSION" in
-                latest)  INDEX_ARGS+=(--extra-index-url https://wheels.vllm.ai/rocm/) ;;
-                nightly) variant="$(rocm_variant nightly)"
-                         [ -n "$variant" ] || venv_fail "no ROCm nightly build of vLLM (https://wheels.vllm.ai/rocm/nightly/)"
-                         INDEX_ARGS+=(--extra-index-url "https://wheels.vllm.ai/rocm/nightly/$variant" --index-strategy unsafe-best-match) ;;
-                *)       variant="$(rocm_variant "$VLLM_VERSION")"
-                         [ -n "$variant" ] || venv_fail "no ROCm build of vLLM $VLLM_VERSION (https://wheels.vllm.ai/rocm/)"
-                         INDEX_ARGS+=(--extra-index-url "https://wheels.vllm.ai/rocm/$VLLM_VERSION/$variant") ;;
-            esac
-            [ -n "$TORCH_INDEX" ] && INDEX_ARGS+=(--extra-index-url "$TORCH_INDEX")
-            ;;
-        xpu)
-            local release="$VLLM_VERSION"
-            if [ "$release" = "latest" ]; then
-                release="$(curl -fsSL --retry 3 --retry-delay 5 https://pypi.org/pypi/vllm/json 2>/dev/null \
-                    | "$VENV/bin/python" -c "import json, sys; print(json.load(sys.stdin)['info']['version'])" 2>/dev/null || true)"
-                [ -n "$release" ] || venv_fail "could not look up the latest vLLM version on PyPI"
-            fi
-            INDEX_ARGS+=(--extra-index-url "https://wheels.vllm.ai/$release/xpu"
-                         --extra-index-url "${TORCH_INDEX:-https://download.pytorch.org/whl/xpu}" --index-strategy unsafe-best-match)
-            ;;
+    local index="" torch="$TORCH_INDEX" variant release
+    case "$PLATFORM:$VLLM_VERSION" in
+        cuda:nightly) index="https://wheels.vllm.ai/nightly" ;;
+        rocm:latest)  index="https://wheels.vllm.ai/rocm/" ;;
+        rocm:*)       variant="$(rocm_variant "$VLLM_VERSION")"
+                      [ -n "$variant" ] || venv_fail "no ROCm build of vLLM $VLLM_VERSION (https://wheels.vllm.ai/rocm/)"
+                      index="https://wheels.vllm.ai/rocm/$VLLM_VERSION/$variant" ;;
+        xpu:*)        release="$VLLM_VERSION"
+                      [ "$release" = "latest" ] && release="$(pypi_latest_vllm)"
+                      [ -n "$release" ] || venv_fail "could not look up the latest vLLM version on PyPI"
+                      index="https://wheels.vllm.ai/$release/xpu"
+                      torch="${torch:-https://download.pytorch.org/whl/xpu}" ;;
     esac
+    if [ "$PLATFORM" = "cuda" ]; then
+        if [ -n "$torch" ]; then SOURCES+=(--extra-index-url "$torch"); else SOURCES+=(--torch-backend=auto); fi
+        [ -n "$index" ] && SOURCES+=(--extra-index-url "$index")
+    else
+        SOURCES+=(--extra-index-url "$index")
+        [ -n "$torch" ] && SOURCES+=(--extra-index-url "$torch")
+    fi
+    if [ "$VLLM_VERSION" = "nightly" ] || [ "$PLATFORM" = "xpu" ]; then
+        SOURCES+=(--index-strategy unsafe-best-match)
+    fi
     return 0
 }
 install_engine() {
-    INDEX_ARGS=()
-    engine_index_args
+    engine_sources
     case "$VLLM_VERSION" in
-        latest)  uv pip install -U "${PIP_ARGS[@]}" "${INDEX_ARGS[@]}" "vllm" ;;
-        nightly) uv pip install -U --prerelease=allow "${PIP_ARGS[@]}" "${INDEX_ARGS[@]}" "vllm" ;;
-        *)       uv pip install "${PIP_ARGS[@]}" "${INDEX_ARGS[@]}" "vllm==$VLLM_VERSION" ;;
+        latest)  uv pip install -U "${PIP_ARGS[@]}" "${SOURCES[@]}" "vllm" ;;
+        nightly) uv pip install -U --prerelease=allow "${PIP_ARGS[@]}" "${SOURCES[@]}" "vllm" ;;
+        *)       uv pip install "${PIP_ARGS[@]}" "${SOURCES[@]}" "vllm==$VLLM_VERSION" ;;
     esac
 }
-case "$PLATFORM" in
-    rocm)
-        GLIBC_VER="$(ldd --version 2>/dev/null | head -1 | grep -oE '[0-9]+\.[0-9]+$' || true)"
-        [ -n "$GLIBC_VER" ] && version_lt "$GLIBC_VER" "2.39" && log "[WARN] glibc $GLIBC_VER: the ROCm build of vLLM needs glibc 2.39 or later (Ubuntu 24.04+)"
-        [ -e /dev/kfd ] || log "[WARN] /dev/kfd not found: install the AMD GPU driver (amdgpu) and ROCm first"
-        ;;
-    xpu)
-        ls /dev/dri/renderD* >/dev/null 2>&1 || log "[WARN] /dev/dri/renderD* not found: install the Intel GPU driver (compute runtime / Level Zero) first"
-        ;;
-esac
-if [ "$PLATFORM" != "cuda" ] && [ "$(id -u)" -ne 0 ] && ! id -nG | grep -qwE 'render|video'; then
-    log "[WARN] $(id -un) is not in the render / video group, so vLLM cannot open the GPU: sudo usermod -aG render,video $(id -un) (then log in again)"
-fi
+gpu_preflight() {
+    case "$PLATFORM" in
+        rocm)
+            local glibc
+            glibc="$(ldd --version 2>/dev/null | head -1 | grep -oE '[0-9]+\.[0-9]+$' || true)"
+            if [ -n "$glibc" ] && version_lt "$glibc" "2.39"; then
+                log "[WARN] glibc $glibc: the ROCm build of vLLM needs glibc 2.39 or later (Ubuntu 24.04+)"
+            fi
+            [ -e /dev/kfd ] || log "[WARN] /dev/kfd not found: install the AMD GPU driver (amdgpu) and ROCm first"
+            ;;
+        xpu)
+            ls /dev/dri/renderD* >/dev/null 2>&1 || log "[WARN] /dev/dri/renderD* not found: install the Intel GPU driver (compute runtime / Level Zero) first"
+            ;;
+        *) return 0 ;;
+    esac
+    if [ "$(id -u)" -ne 0 ] && ! id -nG | grep -qwE 'render|video'; then
+        log "[WARN] $(id -un) is not in the render / video group, so vLLM cannot open the GPU: sudo usermod -aG render,video $(id -un) (then log in again)"
+    fi
+    return 0
+}
+gpu_preflight
 log "Installing vLLM $VLLM_VERSION ($PLATFORM, python $PYTHON_VER)..."
 install_engine || venv_fail "vLLM install failed"
 
@@ -370,9 +374,9 @@ case "$VLLM_VERSION" in
     latest|nightly) ;;
     *) [ "$VLLM_INSTALLED" = "$VLLM_VERSION" ] || [ "${VLLM_INSTALLED%%+*}" = "$VLLM_VERSION" ] || venv_fail "vLLM $VLLM_INSTALLED is installed, expected $VLLM_VERSION" ;;
 esac
-case "$PLATFORM" in
-    rocm|xpu) case "$VLLM_INSTALLED" in *"$PLATFORM"*) ;; *) venv_fail "vLLM $VLLM_INSTALLED is not a $PLATFORM build" ;; esac ;;
-esac
+if [ "$PLATFORM" != "cuda" ]; then
+    case "$VLLM_INSTALLED" in *"$PLATFORM"*) ;; *) venv_fail "vLLM $VLLM_INSTALLED is not a $PLATFORM build" ;; esac
+fi
 log "[OK] vLLM $VLLM_INSTALLED"
 
 if [ "$OFFLINE" -eq 0 ]; then
