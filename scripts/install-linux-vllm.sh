@@ -26,7 +26,7 @@ UV_MIN_VERSION="0.12.1"
 usage() {
     cat << 'USAGE'
 Usage: install-linux-vllm.sh [--platform cuda|rocm|xpu] [--vllm-version X.Y.Z] [--uv-version X.Y.Z] [--torch-index URL] [--offline --wheelhouse DIR] [--version VERSION]
-  --platform      GPU: cuda (NVIDIA) | rocm (AMD) | xpu (Intel)   (default: the platform recorded in this host's venv, else detected; env DB_PLATFORM)
+  --platform      GPU: cuda (NVIDIA) | rocm (AMD) | xpu (Intel)   (default: the platform recorded in this host's venv, else cuda; env DB_PLATFORM)
   --vllm-version  vLLM: latest | nightly | X.Y.Z   (default: the version recorded in this host's venv, else latest; env DB_VLLM_VERSION)
   --uv-version    uv: latest | X.Y.Z             (default: latest; env DB_UV_VERSION)
   --torch-index   PyTorch wheel index URL (default: empty = uv --torch-backend=auto; env DB_TORCH_INDEX)
@@ -72,28 +72,14 @@ if [ "$DB_VERSION" != "latest" ]; then
     TARGET_VERSION="$(printf '%s' "$RELEASE_REF" | sed -E 's/^x20([0-9]{2})([0-9]{4})/\1.\2/; s/-[a-z0-9]+$//')"
 fi
 
-has_amd_discrete_gpu() {
-    [ -e /dev/kfd ] || return 1
-    for f in /sys/class/kfd/kfd/topology/nodes/*/properties; do
-        grep -qs '^simd_count [1-9]' "$f" && ! grep -qs '^cpu_cores_count [1-9]' "$f" && return 0
-    done
-    return 1
-}
-detect_platform() {
-    if command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi -L 2>/dev/null | grep -q '^GPU '; then echo cuda
-    elif has_amd_discrete_gpu; then echo rocm
-    elif command -v xpu-smi >/dev/null 2>&1 && xpu-smi discovery 2>/dev/null | grep -q 'Device ID'; then echo xpu
-    else echo cuda; fi
-}
-PLATFORM_FROM="specified"
-if [ -z "$PLATFORM" ] && [ "$(cat "$INSTALL_DIR/venv/.db-edition" 2>/dev/null)" = "vllm" ]; then
-    PLATFORM="$(cat "$INSTALL_DIR/venv/.db-platform" 2>/dev/null || true)"; PLATFORM_FROM="recorded"
+if [ -z "$PLATFORM" ]; then
+    case "$(cat "$INSTALL_DIR/venv/.db-platform" 2>/dev/null || true)" in
+        rocm) PLATFORM=rocm ;;
+        xpu)  PLATFORM=xpu ;;
+        *)    PLATFORM=cuda ;;
+    esac
 fi
-[ -n "$PLATFORM" ] || { PLATFORM="$(detect_platform)"; PLATFORM_FROM="detected"; }
 case "$PLATFORM" in cuda|rocm|xpu) ;; *) echo "[ERROR] --platform must be cuda, rocm or xpu (got: $PLATFORM)"; exit 2 ;; esac
-if [ "$PLATFORM_FROM" = "recorded" ] && [ "$PLATFORM" != "$(detect_platform)" ]; then
-    echo "[WARN] this host looks like $(detect_platform) but the previous install was $PLATFORM; pass --platform $(detect_platform) to change"
-fi
 
 offline_manifest() {
     cat << EOF
@@ -191,7 +177,7 @@ if [ -z "$VLLM_VERSION" ] && [ "$(cat "$INSTALL_DIR/venv/.db-edition" 2>/dev/nul
 fi
 VLLM_VERSION="${VLLM_VERSION:-latest}"
 UV_VERSION="${UV_VERSION:-latest}"
-log "[UPDATE] target: app $(manifest_get version), vLLM $VLLM_VERSION, uv $UV_VERSION, platform $PLATFORM ($PLATFORM_FROM), torch index ${TORCH_INDEX:-auto}"
+log "[UPDATE] target: app $(manifest_get version), vLLM $VLLM_VERSION, uv $UV_VERSION, platform $PLATFORM, torch index ${TORCH_INDEX:-auto}"
 
 [ -n "$TARGET_VERSION" ] || TARGET_VERSION="$(manifest_get version)"
 version_lt() { awk -v a="$1" -v b="$2" 'BEGIN { n = split(a, x, "."); m = split(b, y, "."); k = (n > m) ? n : m
