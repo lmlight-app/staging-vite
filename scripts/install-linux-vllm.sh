@@ -21,10 +21,12 @@ WHEELHOUSE="${DB_WHEELHOUSE:-}"
 VLLM_VERSION="${DB_VLLM_VERSION:-}"
 UV_VERSION="${DB_UV_VERSION:-}"
 TORCH_INDEX="${DB_TORCH_INDEX:-}"
+PLATFORM="${DB_PLATFORM:-}"
 UV_MIN_VERSION="0.12.1"
 usage() {
     cat << 'USAGE'
-Usage: install-linux-vllm.sh [--vllm-version X.Y.Z] [--uv-version X.Y.Z] [--torch-index URL] [--offline --wheelhouse DIR] [--version VERSION]
+Usage: install-linux-vllm.sh [--platform cuda|rocm|xpu] [--vllm-version X.Y.Z] [--uv-version X.Y.Z] [--torch-index URL] [--offline --wheelhouse DIR] [--version VERSION]
+  --platform      GPU: cuda (NVIDIA) | rocm (AMD) | xpu (Intel)   (default: the platform recorded in this host's venv, else detected; env DB_PLATFORM)
   --vllm-version  vLLM: latest | nightly | X.Y.Z   (default: the version recorded in this host's venv, else latest; env DB_VLLM_VERSION)
   --uv-version    uv: latest | X.Y.Z             (default: latest; env DB_UV_VERSION)
   --torch-index   PyTorch wheel index URL (default: empty = uv --torch-backend=auto; env DB_TORCH_INDEX)
@@ -41,6 +43,7 @@ while [ $# -gt 0 ]; do
         --vllm-version) VLLM_VERSION="${2:?--vllm-version requires latest|nightly|X.Y.Z}"; shift ;;
         --uv-version) UV_VERSION="${2:?--uv-version requires latest|X.Y.Z}"; shift ;;
         --torch-index) TORCH_INDEX="${2:?--torch-index requires URL}"; shift ;;
+        --platform) PLATFORM="${2:?--platform requires cuda|rocm|xpu}"; shift ;;
         -h|--help) usage; exit 0 ;;
         *) echo "[ERROR] Unknown option: $1"; usage; exit 2 ;;
     esac
@@ -69,15 +72,28 @@ if [ "$DB_VERSION" != "latest" ]; then
     TARGET_VERSION="$(printf '%s' "$RELEASE_REF" | sed -E 's/^x20([0-9]{2})([0-9]{4})/\1.\2/; s/-[a-z0-9]+$//')"
 fi
 
+detect_platform() {
+    if command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi -L 2>/dev/null | grep -q '^GPU '; then echo cuda
+    elif [ -e /dev/kfd ] && grep -qs '^0x1002$' /sys/class/drm/card*/device/vendor; then echo rocm
+    elif command -v xpu-smi >/dev/null 2>&1 && xpu-smi discovery 2>/dev/null | grep -q 'Device ID'; then echo xpu
+    else echo cuda; fi
+}
+PLATFORM_FROM="specified"
+if [ -z "$PLATFORM" ] && [ "$(cat "$INSTALL_DIR/venv/.db-edition" 2>/dev/null)" = "vllm" ]; then
+    PLATFORM="$(cat "$INSTALL_DIR/venv/.db-platform" 2>/dev/null)"; PLATFORM_FROM="recorded"
+fi
+[ -n "$PLATFORM" ] || { PLATFORM="$(detect_platform)"; PLATFORM_FROM="detected"; }
+case "$PLATFORM" in cuda|rocm|xpu) ;; *) echo "[ERROR] --platform must be cuda, rocm or xpu (got: $PLATFORM)"; exit 2 ;; esac
+
 offline_manifest() {
     cat << EOF
 
-Pre-stage the following files in ${WHEELHOUSE:-<wheelhouse DIR>} (fetch on an online machine with the same arch / CUDA):
+Pre-stage the following files in ${WHEELHOUSE:-<wheelhouse DIR>} (fetch on an online machine with the same arch / GPU platform ($PLATFORM)):
   $BINARY_NAME             backend binary      $BASE_URL/$BINARY_NAME
   $BINARY_NAME.sha256      checksum            $BASE_URL/$BINARY_NAME.sha256
   latest.json              version manifest    $BASE_URL/latest.json   (optional: records the app version)
   uv                       uv binary $UV_VERSION  https://github.com/astral-sh/uv/releases (uv-<arch>-unknown-linux-gnu.tar.gz, extract 'uv')
-  *.whl                    wheels:  pip download "vllm==${VLLM_VERSION:-<version>}" --dest . [--extra-index-url <torch index>]
+  *.whl                    wheels:  pip download "vllm==${VLLM_VERSION:-<version>}" --dest . [--extra-index-url <index for $PLATFORM: see README>]
   hf-cache.tar             (optional) tar of ~/.cache/huggingface holding the models to serve
   python$PYTHON_VER               must already be installed on this host (uv cannot download interpreters offline)
 EOF
@@ -165,7 +181,7 @@ if [ -z "$VLLM_VERSION" ] && [ "$(cat "$INSTALL_DIR/venv/.db-edition" 2>/dev/nul
 fi
 VLLM_VERSION="${VLLM_VERSION:-latest}"
 UV_VERSION="${UV_VERSION:-latest}"
-log "[UPDATE] target: app $(manifest_get version), vLLM $VLLM_VERSION, uv $UV_VERSION, torch index ${TORCH_INDEX:-auto}"
+log "[UPDATE] target: app $(manifest_get version), vLLM $VLLM_VERSION, uv $UV_VERSION, platform $PLATFORM ($PLATFORM_FROM), torch index ${TORCH_INDEX:-auto}"
 
 [ -n "$TARGET_VERSION" ] || TARGET_VERSION="$(manifest_get version)"
 version_lt() { awk -v a="$1" -v b="$2" 'BEGIN { n = split(a, x, "."); m = split(b, y, "."); k = (n > m) ? n : m
@@ -284,36 +300,82 @@ if ! uv venv "${VENV_ARGS[@]}" "$VENV"; then
 fi
 echo "vllm" > "$VENV/.db-edition"
 echo "$VLLM_VERSION" > "$VENV/.db-engine-spec"
+echo "$PLATFORM" > "$VENV/.db-platform"
 
 PIP_ARGS=(--python "$VENV/bin/python")
-if [ "$OFFLINE" -eq 1 ]; then
-    PIP_ARGS+=(--no-index --find-links "$WHEELHOUSE")
-elif [ -n "$TORCH_INDEX" ]; then
-    PIP_ARGS+=(--extra-index-url "$TORCH_INDEX")
-else
-    PIP_ARGS+=(--torch-backend=auto)
-fi
+[ "$OFFLINE" -eq 1 ] && PIP_ARGS+=(--no-index --find-links "$WHEELHOUSE")
+venv_fail() { log "[ERROR] $1 (run the installer again to retry)"; rm -f "$INSTALL_DIR/api.new"; exit 1; }
+rocm_variant() { curl -fsSL --retry 3 --retry-delay 5 "https://wheels.vllm.ai/rocm/$1/" 2>/dev/null | grep -oE 'rocm[0-9]+' | sort -V | tail -1; }
+engine_index_args() {
+    [ "$OFFLINE" -eq 1 ] && return 0
+    case "$PLATFORM" in
+        cuda)
+            if [ -n "$TORCH_INDEX" ]; then INDEX_ARGS+=(--extra-index-url "$TORCH_INDEX"); else INDEX_ARGS+=(--torch-backend=auto); fi
+            [ "$VLLM_VERSION" = "nightly" ] && INDEX_ARGS+=(--extra-index-url https://wheels.vllm.ai/nightly --index-strategy unsafe-best-match)
+            ;;
+        rocm)
+            local variant
+            case "$VLLM_VERSION" in
+                latest)  INDEX_ARGS+=(--extra-index-url https://wheels.vllm.ai/rocm/) ;;
+                nightly) variant="$(rocm_variant nightly)"
+                         [ -n "$variant" ] || venv_fail "no ROCm nightly build of vLLM (https://wheels.vllm.ai/rocm/nightly/)"
+                         INDEX_ARGS+=(--extra-index-url "https://wheels.vllm.ai/rocm/nightly/$variant" --index-strategy unsafe-best-match) ;;
+                *)       variant="$(rocm_variant "$VLLM_VERSION")"
+                         [ -n "$variant" ] || venv_fail "no ROCm build of vLLM $VLLM_VERSION (https://wheels.vllm.ai/rocm/)"
+                         INDEX_ARGS+=(--extra-index-url "https://wheels.vllm.ai/rocm/$VLLM_VERSION/$variant") ;;
+            esac
+            [ -n "$TORCH_INDEX" ] && INDEX_ARGS+=(--extra-index-url "$TORCH_INDEX")
+            ;;
+        xpu)
+            local release="$VLLM_VERSION"
+            if [ "$release" = "latest" ]; then
+                release="$(curl -fsSL --retry 3 --retry-delay 5 https://pypi.org/pypi/vllm/json 2>/dev/null \
+                    | "$VENV/bin/python" -c "import json, sys; print(json.load(sys.stdin)['info']['version'])" 2>/dev/null || true)"
+                [ -n "$release" ] || venv_fail "could not look up the latest vLLM version on PyPI"
+            fi
+            INDEX_ARGS+=(--extra-index-url "https://wheels.vllm.ai/$release/xpu"
+                         --extra-index-url "${TORCH_INDEX:-https://download.pytorch.org/whl/xpu}" --index-strategy unsafe-best-match)
+            ;;
+    esac
+    return 0
+}
 install_engine() {
+    INDEX_ARGS=()
+    engine_index_args
     case "$VLLM_VERSION" in
-        latest)  uv pip install -U "${PIP_ARGS[@]}" "vllm" ;;
-        nightly) uv pip install -U --prerelease=allow --index-strategy unsafe-best-match "${PIP_ARGS[@]}" \
-                     --extra-index-url https://wheels.vllm.ai/nightly "vllm" ;;
-        *)       uv pip install "${PIP_ARGS[@]}" "vllm==$VLLM_VERSION" ;;
+        latest)  uv pip install -U "${PIP_ARGS[@]}" "${INDEX_ARGS[@]}" "vllm" ;;
+        nightly) uv pip install -U --prerelease=allow "${PIP_ARGS[@]}" "${INDEX_ARGS[@]}" "vllm" ;;
+        *)       uv pip install "${PIP_ARGS[@]}" "${INDEX_ARGS[@]}" "vllm==$VLLM_VERSION" ;;
     esac
 }
-venv_fail() { log "[ERROR] $1 (run the installer again to retry)"; rm -f "$INSTALL_DIR/api.new"; exit 1; }
-log "Installing vLLM $VLLM_VERSION..."
+case "$PLATFORM" in
+    rocm)
+        GLIBC_VER="$(ldd --version 2>/dev/null | head -1 | grep -oE '[0-9]+\.[0-9]+$' || true)"
+        [ -n "$GLIBC_VER" ] && version_lt "$GLIBC_VER" "2.39" && log "[WARN] glibc $GLIBC_VER: the ROCm build of vLLM needs glibc 2.39 or later (Ubuntu 24.04+)"
+        [ -e /dev/kfd ] || log "[WARN] /dev/kfd not found: install the AMD GPU driver (amdgpu) and ROCm first"
+        ;;
+    xpu)
+        ls /dev/dri/renderD* >/dev/null 2>&1 || log "[WARN] /dev/dri/renderD* not found: install the Intel GPU driver (compute runtime / Level Zero) first"
+        ;;
+esac
+if [ "$PLATFORM" != "cuda" ] && [ "$(id -u)" -ne 0 ] && ! id -nG | grep -qwE 'render|video'; then
+    log "[WARN] $(id -un) is not in the render / video group, so vLLM cannot open the GPU: sudo usermod -aG render,video $(id -un) (then log in again)"
+fi
+log "Installing vLLM $VLLM_VERSION ($PLATFORM, python $PYTHON_VER)..."
 install_engine || venv_fail "vLLM install failed"
 
 if ! "$VENV/bin/python" -c "import torchaudio" >/dev/null 2>&1; then
-    log "[WARN] torchaudio is unusable (CUDA build mismatch with torch); removing it. Audio-input models will not be available."
+    log "[WARN] torchaudio is unusable (build mismatch with torch); removing it. Audio-input models will not be available."
     uv pip uninstall --python "$VENV/bin/python" torchaudio >/dev/null 2>&1 || true
 fi
 "$VENV/bin/python" -c "import vllm" >/dev/null 2>&1 || venv_fail "vllm is not importable after install"
 VLLM_INSTALLED="$("$VENV/bin/python" -c "import importlib.metadata as m; print(m.version('vllm'))" 2>/dev/null || true)"
 case "$VLLM_VERSION" in
     latest|nightly) ;;
-    *) [ "$VLLM_INSTALLED" = "$VLLM_VERSION" ] || venv_fail "vLLM $VLLM_INSTALLED is installed, expected $VLLM_VERSION" ;;
+    *) [ "$VLLM_INSTALLED" = "$VLLM_VERSION" ] || [ "${VLLM_INSTALLED%%+*}" = "$VLLM_VERSION" ] || venv_fail "vLLM $VLLM_INSTALLED is installed, expected $VLLM_VERSION" ;;
+esac
+case "$PLATFORM" in
+    rocm|xpu) case "$VLLM_INSTALLED" in *"$PLATFORM"*) ;; *) venv_fail "vLLM $VLLM_INSTALLED is not a $PLATFORM build" ;; esac ;;
 esac
 log "[OK] vLLM $VLLM_INSTALLED"
 
@@ -486,10 +548,12 @@ fi
 
 pg_isready -q 2>/dev/null || { echo "[ERROR] PostgreSQL not running"; exit 1; }
 
-# Check NVIDIA GPU (vLLM requires CUDA)
-if ! command -v nvidia-smi &>/dev/null; then
-    echo "[WARN] nvidia-smi not found. vLLM requires NVIDIA GPU with CUDA."
-fi
+# Check the GPU that vLLM was installed for (venv/.db-platform)
+case "$(cat venv/.db-platform 2>/dev/null || echo cuda)" in
+    cuda) command -v nvidia-smi &>/dev/null || echo "[WARN] nvidia-smi not found. vLLM (CUDA) requires an NVIDIA GPU." ;;
+    rocm) [ -e /dev/kfd ] || echo "[WARN] /dev/kfd not found. vLLM (ROCm) requires an AMD GPU with the amdgpu driver." ;;
+    xpu)  ls /dev/dri/renderD* &>/dev/null || echo "[WARN] /dev/dri not found. vLLM (XPU) requires an Intel GPU driver." ;;
+esac
 
 [ -f api.pid ] && kill "$(cat api.pid)" 2>/dev/null
 HERE="$(pwd -P)"

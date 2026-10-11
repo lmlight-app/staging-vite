@@ -3,6 +3,7 @@
 #
 #   curl -fsSL https://pub-a2cab4360f1748cab5ae1c0f12cddc0a.r2.dev/vite-scripts/install-docker.sh | bash
 #   curl -fsSL .../install-docker.sh | GPU=1 bash           # vLLM も container で同梱 (NVIDIA GPU)
+#   curl -fsSL .../install-docker.sh | GPU=rocm bash        # 同 (AMD GPU)。Intel GPU は GPU=xpu
 #   curl -fsSL .../install-docker.sh | APP_PORT=8080 bash   # 初回だけ .env に書く
 #
 # やること: Docker と compose の確認 → compose ファイルを INSTALL_DIR に置く → .env が無ければ雛形から作る → pull → up。
@@ -11,17 +12,19 @@ set -euo pipefail
 
 INSTALL_DIR="${DB_INSTALL_DIR:-$HOME/digitalbase}"
 BASE_URL="${DB_SCRIPTS_URL:-https://pub-a2cab4360f1748cab5ae1c0f12cddc0a.r2.dev/vite-scripts}"
-GPU="${GPU:-0}"                       # 1 = docker-compose.vllm.yml を重ねる
-EDITION="${EDITION:-}"                # ollama | vllm。空なら GPU=1 の時 vllm、それ以外 ollama (初回の .env にだけ効く)
+GPU="${GPU:-0}"                       # 1 (= cuda) / rocm / xpu = docker-compose.vllm.yml を重ねる (rocm / xpu はさらに -rocm / -xpu を重ねる)
+EDITION="${EDITION:-}"                # ollama | vllm。空なら GPU 指定の時 vllm、それ以外 ollama (初回の .env にだけ効く)
 APP_PORT="${APP_PORT:-}"              # 初回の .env にだけ効く
 
-[ -z "$EDITION" ] && { [ "$GPU" = "1" ] && EDITION=vllm || EDITION=ollama; }
+[ "$GPU" = "cuda" ] && GPU=1
+case "$GPU" in 0|1|rocm|xpu) ;; *) echo "[ERROR] GPU は 0 / 1 (= cuda) / rocm / xpu"; exit 2 ;; esac
+[ -z "$EDITION" ] && { [ "$GPU" != "0" ] && EDITION=vllm || EDITION=ollama; }
 
 echo "============================================"
 echo "  DigitalBase Docker Installer"
 echo "============================================"
 echo "  install dir : $INSTALL_DIR"
-echo "  edition     : $EDITION$([ "$GPU" = "1" ] && echo ' (vLLM を container で同梱)')"
+echo "  edition     : $EDITION$([ "$GPU" != "0" ] && echo " (vLLM を container で同梱、GPU=$GPU)")"
 echo ""
 
 # ── 1. preflight ──────────────────────────────────────────────────────
@@ -44,11 +47,15 @@ fi
 if [ "$GPU" = "1" ] && ! docker info 2>/dev/null | grep -qi nvidia; then
     echo "[WARN] NVIDIA Container Toolkit が見つかりません。GPU=1 は nvidia runtime が要ります: https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/"
 fi
+[ "$GPU" = "rocm" ] && [ ! -e /dev/kfd ] && echo "[WARN] /dev/kfd がありません。GPU=rocm はホストに AMD GPU driver (amdgpu) が要ります"
+[ "$GPU" = "xpu" ] && ! ls /dev/dri/renderD* >/dev/null 2>&1 && echo "[WARN] /dev/dri がありません。GPU=xpu はホストに Intel GPU driver が要ります"
 
 # ── 2. compose ファイル (常に最新へ差し替え) ───────────────────────────
 mkdir -p "$INSTALL_DIR/data" "$INSTALL_DIR/postgres-data"
 cd "$INSTALL_DIR"
-for f in docker-compose.yml docker-compose.vllm.yml docker.env.example; do
+COMPOSE_FILES="docker-compose.yml docker-compose.vllm.yml docker.env.example"
+case "$GPU" in rocm|xpu) COMPOSE_FILES="$COMPOSE_FILES docker-compose.vllm-$GPU.yml" ;; esac
+for f in $COMPOSE_FILES; do
     curl -fsSL "$BASE_URL/$f" -o "$f.tmp" || { echo "[ERROR] $f を取得できません ($BASE_URL)"; rm -f "$f.tmp"; exit 1; }
     mv "$f.tmp" "$f"
 done
@@ -68,7 +75,8 @@ PORT="${PORT:-8000}"
 
 # ── 4. 起動 (再実行なら更新) ──────────────────────────────────────────
 FILES="-f docker-compose.yml"
-[ "$GPU" = "1" ] && FILES="$FILES -f docker-compose.vllm.yml"
+[ "$GPU" != "0" ] && FILES="$FILES -f docker-compose.vllm.yml"
+case "$GPU" in rocm|xpu) FILES="$FILES -f docker-compose.vllm-$GPU.yml" ;; esac
 # shellcheck disable=SC2086
 docker compose $FILES pull
 # shellcheck disable=SC2086
@@ -96,5 +104,5 @@ echo "    docker compose logs -f app   # ログ"
 echo "    docker compose down          # 停止 (データは残る)"
 echo "    docker compose up -d         # 起動"
 echo "    更新: この installer を再実行 (= pull して up)"
-[ "$GPU" = "1" ] && echo "    GPU 版は docker compose に -f docker-compose.yml -f docker-compose.vllm.yml を付ける"
+[ "$GPU" != "0" ] && echo "    GPU 版は docker compose に $FILES を付ける"
 echo "============================================"

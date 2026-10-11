@@ -1,0 +1,640 @@
+#!/bin/bash
+# AI Server Installer for Linux (vLLM Edition)
+set -e
+
+if [ -z "$HOME" ] || [ "$HOME" = "/" ]; then
+    HOME="$(getent passwd "$(id -u)" 2>/dev/null | cut -d: -f6)"
+    [ -n "$HOME" ] || HOME="/root"
+    export HOME
+fi
+
+BASE_URL="${DB_BASE_URL:-https://github.com/lmlight-app/dist_vite/releases/latest/download}"
+VERSION_BASE_URL="https://github.com/lmlight-app/dist_vite/releases/download/"
+INSTALL_DIR="${DB_INSTALL_DIR:-$HOME/.local/db}"
+PYTHON_VER="${DB_PYTHON_VER:-3.13}"
+ARCH="$(uname -m)"
+case "$ARCH" in x86_64|amd64) ARCH="amd64" ;; aarch64|arm64) ARCH="arm64" ;; esac
+BINARY_NAME="lmlight-vite-linux-$ARCH"
+
+OFFLINE=0
+WHEELHOUSE="${DB_WHEELHOUSE:-}"
+VLLM_VERSION="${DB_VLLM_VERSION:-}"
+UV_VERSION="${DB_UV_VERSION:-}"
+TORCH_INDEX="${DB_TORCH_INDEX:-}"
+UV_MIN_VERSION="0.12.1"
+usage() {
+    cat << 'USAGE'
+Usage: install-linux-vllm.sh [--vllm-version X.Y.Z] [--uv-version X.Y.Z] [--torch-index URL] [--offline --wheelhouse DIR] [--version VERSION]
+  --vllm-version  vLLM: latest | nightly | X.Y.Z   (default: the version recorded in this host's venv, else latest; env DB_VLLM_VERSION)
+  --uv-version    uv: latest | X.Y.Z             (default: latest; env DB_UV_VERSION)
+  --torch-index   PyTorch wheel index URL (default: empty = uv --torch-backend=auto; env DB_TORCH_INDEX)
+  --version       DigitalBase version to install: latest | YY.MMDD[.N] | xYYYYMMDD[.N][-linux] (default: latest; env DB_VERSION)
+  --offline       no network: binary / checksum / uv / wheels are taken from --wheelhouse DIR
+  --wheelhouse    directory with the pre-staged files (env DB_WHEELHOUSE). See "Offline install" in README
+USAGE
+}
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --offline) OFFLINE=1 ;;
+        --version) DB_VERSION="${2:?--version requires latest|YY.MMDD[.N]|xYYYYMMDD[.N][-linux]}"; shift ;;
+        --wheelhouse) WHEELHOUSE="${2:?--wheelhouse requires DIR}"; shift ;;
+        --vllm-version) VLLM_VERSION="${2:?--vllm-version requires latest|nightly|X.Y.Z}"; shift ;;
+        --uv-version) UV_VERSION="${2:?--uv-version requires latest|X.Y.Z}"; shift ;;
+        --torch-index) TORCH_INDEX="${2:?--torch-index requires URL}"; shift ;;
+        -h|--help) usage; exit 0 ;;
+        *) echo "[ERROR] Unknown option: $1"; usage; exit 2 ;;
+    esac
+    shift
+done
+DB_VERSION="${DB_VERSION:-latest}"
+printf '%s' "$DB_VERSION" | grep -Eq '^(latest|[0-9]{2}\.[0-9]{4}(\.[0-9]+)?|x[0-9]{8}(\.[0-9]+)?(-[a-z0-9]+)?)$' \
+    || { echo "[ERROR] --version must be latest, a version (YY.MMDD[.N]), or a release tag (xYYYYMMDD[.N][-linux])"; exit 2; }
+TARGET_VERSION=""
+if [ "$DB_VERSION" != "latest" ]; then
+    [ "${OFFLINE:-0}" -eq 0 ] || { echo "[ERROR] --version cannot be combined with --offline (the wheelhouse decides the version)"; exit 2; }
+    RELEASE_REF="$DB_VERSION"
+# BEGIN staging-only
+    case "$RELEASE_REF" in
+        x*) ;;
+        *)
+            RAW_VERSION="20$(printf '%s' "$RELEASE_REF" | sed -E 's/^([0-9]{2})\.([0-9]{4})/\1\2/')"
+            CANDIDATES="$(curl -fsSL "https://api.github.com/repos/lmlight-app/dist_vite/releases?per_page=100" 2>/dev/null \
+                | grep -o '"tag_name": *"x'"$RAW_VERSION"'\(-[a-z0-9]*\)\{0,1\}"' | sed -E 's/.*"(x[^"]+)".*/\1/')"
+            RELEASE_REF="$(printf '%s\n' "$CANDIDATES" | grep -m1 -- '-linux$' || printf '%s\n' "$CANDIDATES" | grep -m1 -v -- '-' || true)"
+            [ -n "$RELEASE_REF" ] || { echo "[ERROR] Version $DB_VERSION was not found in releases; pass the release tag instead (xYYYYMMDD[.N][-linux])"; exit 1; }
+            ;;
+    esac
+# END staging-only
+    [ -n "${DB_BASE_URL:-}" ] || BASE_URL="${VERSION_BASE_URL}${RELEASE_REF}"
+    TARGET_VERSION="$(printf '%s' "$RELEASE_REF" | sed -E 's/^x20([0-9]{2})([0-9]{4})/\1.\2/; s/-[a-z0-9]+$//')"
+fi
+
+offline_manifest() {
+    cat << EOF
+
+Pre-stage the following files in ${WHEELHOUSE:-<wheelhouse DIR>} (fetch on an online machine with the same arch / CUDA):
+  $BINARY_NAME             backend binary      $BASE_URL/$BINARY_NAME
+  $BINARY_NAME.sha256      checksum            $BASE_URL/$BINARY_NAME.sha256
+  latest.json              version manifest    $BASE_URL/latest.json   (optional: records the app version)
+  uv                       uv binary $UV_VERSION  https://github.com/astral-sh/uv/releases (uv-<arch>-unknown-linux-gnu.tar.gz, extract 'uv')
+  *.whl                    wheels:  pip download "vllm==${VLLM_VERSION:-<version>}" --dest . [--extra-index-url <torch index>]
+  hf-cache.tar             (optional) tar of ~/.cache/huggingface holding the models to serve
+  python$PYTHON_VER               must already be installed on this host (uv cannot download interpreters offline)
+EOF
+}
+if [ "$OFFLINE" -eq 1 ]; then
+    if [ -z "$WHEELHOUSE" ] || [ ! -d "$WHEELHOUSE" ]; then
+        echo "[ERROR] --offline requires --wheelhouse DIR (existing directory)"; offline_manifest; exit 2
+    fi
+    WHEELHOUSE="$(cd "$WHEELHOUSE" && pwd -P)"
+    export UV_OFFLINE=1 UV_NO_PROGRESS=1
+fi
+
+echo " Installing AI Server vLLM Edition ($ARCH) to $INSTALL_DIR"
+
+# ── Privilege helper: support root-without-sudo (minimal GPU containers) ──
+if [ "$(id -u)" -eq 0 ]; then
+    SUDO=""                       # already root: no sudo needed
+elif command -v sudo &>/dev/null; then
+    SUDO="sudo"
+else
+    SUDO=""
+    echo "[WARN] root でも sudo でもありません。特権操作 (apt / postgres / symlink) が失敗する可能性があります。"
+fi
+[ -t 0 ] || { [ -n "$SUDO" ] && SUDO="sudo -n"; }
+
+# Run psql as the postgres superuser. Handles: non-root+sudo, root w/o sudo (su), fallback.
+pg_admin() {
+    if [ -n "$SUDO" ]; then
+        $SUDO -u postgres psql "$@"
+    elif [ "$(id -u)" -eq 0 ]; then
+        su postgres -c "psql $(printf '%q ' "$@")"
+    else
+        psql "$@"
+    fi
+}
+
+mkdir -p "$INSTALL_DIR"
+
+UPDATE_LOG="$INSTALL_DIR/update.log"
+log() { echo "$*"; printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >> "$UPDATE_LOG"; }
+
+verify_sha256() {
+    local file="$1" src="$2" expected="" actual=""
+    if [ "${DB_SKIP_SHA256:-0}" = "1" ]; then log "[WARN] sha256 verification skipped (DB_SKIP_SHA256=1)"; return 0; fi
+    if [ -f "$src" ]; then
+        expected="$(awk '{print $1}' "$src")"
+    else
+        expected="$(curl -fsSL --retry 3 --retry-delay 5 "$src" 2>/dev/null | awk '{print $1}')"
+    fi
+    expected="$(printf '%s' "$expected" | tr 'A-F' 'a-f')"
+    if ! printf '%s' "$expected" | grep -Eq '^[0-9a-f]{64}$'; then
+        log "[WARN] checksum unavailable ($src), continuing without sha256 verification"; return 0
+    fi
+    actual="$(sha256sum "$file" | awk '{print $1}')"
+    if [ "$expected" != "$actual" ]; then
+        rm -f "$file"; log "[ERROR] sha256 mismatch for $(basename "$src" .sha256): expected $expected, got $actual"; exit 1
+    fi
+    log "[OK] sha256 verified: $actual"
+}
+
+install_binary() {
+    chmod +x "$INSTALL_DIR/api.new"
+    mv -f "$INSTALL_DIR/api.new" "$INSTALL_DIR/api"
+    # 退避物 (api.prev / venv.prev 等) が残っていれば片付ける (= 前の版へは版を指定したインストールで戻す)
+    rm -rf "$INSTALL_DIR/api.prev" "$INSTALL_DIR/api.rollback" "$INSTALL_DIR/VERSION.prev" "$INSTALL_DIR/VERSION.rollback" \
+           "$INSTALL_DIR/venv.prev" "$INSTALL_DIR/venv.rollback" "$INSTALL_DIR/venv.new"
+    log "[OK] binary installed"
+    if [ -n "$TARGET_VERSION" ]; then
+        printf '%s\n' "$TARGET_VERSION" > "$INSTALL_DIR/VERSION"
+    fi
+}
+
+
+if [ "$OFFLINE" -eq 1 ]; then
+    MANIFEST_FILE="$WHEELHOUSE/latest.json"
+else
+    MANIFEST_FILE="$(mktemp)"
+    curl -fsSL --retry 3 --retry-delay 5 "$BASE_URL/latest.json" -o "$MANIFEST_FILE" 2>/dev/null \
+        || log "[WARN] Could not fetch $BASE_URL/latest.json"
+fi
+manifest_get() { sed -n "s/.*\"$1\" *: *\"\([^\"]*\)\".*/\1/p" "$MANIFEST_FILE" 2>/dev/null | head -1; }
+# 推論エンジンの版: 指定 (--vllm-version / 管理画面の「版を変更」) > この機械の venv に記録した版 > latest
+if [ -z "$VLLM_VERSION" ] && [ "$(cat "$INSTALL_DIR/venv/.db-edition" 2>/dev/null)" = "vllm" ]; then
+    VLLM_VERSION="$(cat "$INSTALL_DIR/venv/.db-engine-spec" 2>/dev/null)"
+fi
+VLLM_VERSION="${VLLM_VERSION:-latest}"
+UV_VERSION="${UV_VERSION:-latest}"
+log "[UPDATE] target: app $(manifest_get version), vLLM $VLLM_VERSION, uv $UV_VERSION, torch index ${TORCH_INDEX:-auto}"
+
+[ -n "$TARGET_VERSION" ] || TARGET_VERSION="$(manifest_get version)"
+version_lt() { awk -v a="$1" -v b="$2" 'BEGIN { n = split(a, x, "."); m = split(b, y, "."); k = (n > m) ? n : m
+    for (i = 1; i <= k; i++) { p = (i <= n) ? x[i] + 0 : 0; q = (i <= m) ? y[i] + 0 : 0; if (p < q) exit 0; if (p > q) exit 1 } exit 1 }'; }
+INSTALLED_VERSION="$(cat "$INSTALL_DIR/VERSION" 2>/dev/null || true)"
+if [ -n "$TARGET_VERSION" ] && [ -n "$INSTALLED_VERSION" ] && version_lt "$TARGET_VERSION" "$INSTALLED_VERSION"; then
+    log "[WARN] $TARGET_VERSION is older than the installed $INSTALLED_VERSION. Data written by the newer version may become unreadable."
+fi
+WAS_ACTIVE=0
+if [ -z "$DB_NO_SERVICE" ]; then
+    { systemctl is-active --quiet db 2>/dev/null || systemctl is-active --quiet digitalbase 2>/dev/null; } && WAS_ACTIVE=1
+    command -v systemctl &>/dev/null && $SUDO systemctl stop db digitalbase 2>/dev/null || true
+    [ -f "$INSTALL_DIR/stop.sh" ] && "$INSTALL_DIR/stop.sh" 2>/dev/null || true
+fi
+if [ -d "$INSTALL_DIR" ]; then
+    _RP="$(cd "$INSTALL_DIR" && pwd -P)"
+    for p in $(pgrep -fx "./api" 2>/dev/null; pgrep -fx "$_RP/api" 2>/dev/null); do
+        if [ "$(readlink /proc/$p/cwd 2>/dev/null)" = "$_RP" ]; then
+            echo "[ERROR] 稼働中のプロセスを停止できませんでした。先に停止してから再実行してください:"
+            echo "   sudo systemctl stop db   (または $INSTALL_DIR/stop.sh)"
+            exit 1
+        fi
+    done
+fi
+
+echo " Downloading AI Server backend..."
+
+BINARY_URL="$BASE_URL/$BINARY_NAME"
+
+if [ "$OFFLINE" -eq 1 ]; then
+    log "[UPDATE] start (offline): $WHEELHOUSE/$BINARY_NAME"
+    [ -f "$WHEELHOUSE/$BINARY_NAME" ] || { log "[ERROR] $BINARY_NAME not found in $WHEELHOUSE"; offline_manifest; exit 1; }
+    cp -f "$WHEELHOUSE/$BINARY_NAME" "$INSTALL_DIR/api.new"
+    SHA_SRC="$WHEELHOUSE/$BINARY_NAME.sha256"
+else
+    log "[UPDATE] start: $BINARY_URL"
+    curl -fL --connect-timeout 30 --max-time 0 --retry 3 --retry-delay 5 \
+        "$BINARY_URL" -o "$INSTALL_DIR/api.new" || true
+    SHA_SRC="$BINARY_URL.sha256"
+fi
+if [ ! -s "$INSTALL_DIR/api.new" ] || ! head -c 4 "$INSTALL_DIR/api.new" | grep -q $'\x7fELF'; then
+    rm -f "$INSTALL_DIR/api.new"
+    log "[ERROR] Failed to download backend: $BINARY_URL"
+    exit 1
+fi
+verify_sha256 "$INSTALL_DIR/api.new" "$SHA_SRC"
+
+echo "Setting up Python environment for vLLM..."
+
+export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
+UV_HAVE="$(uv --version 2>/dev/null | awk '{print $2}' || true)"
+uv_too_old() { [ -z "$UV_HAVE" ] || { [ "$(printf '%s\n%s\n' "$UV_MIN_VERSION" "$UV_HAVE" | sort -V | head -1)" = "$UV_HAVE" ] && [ "$UV_HAVE" != "$UV_MIN_VERSION" ]; }; }
+if [ "$UV_VERSION" = "latest" ] && ! uv_too_old; then
+    log "[OK] uv $UV_HAVE"
+elif [ "$UV_VERSION" = "latest" ] && [ "$OFFLINE" -eq 0 ]; then
+    log "Installing uv latest (found: ${UV_HAVE:-none}, minimum $UV_MIN_VERSION)..."
+    curl -LsSf https://astral.sh/uv/install.sh | sh
+    hash -r
+    log "[OK] uv $(uv --version 2>/dev/null | awk '{print $2}')"
+elif [ "$UV_VERSION" != "latest" ] && [ "$UV_HAVE" = "$UV_VERSION" ]; then
+    log "[OK] uv $UV_VERSION"
+elif [ "$OFFLINE" -eq 1 ]; then
+    [ -f "$WHEELHOUSE/uv" ] || { log "[ERROR] uv binary not found in $WHEELHOUSE"; offline_manifest; exit 1; }
+    mkdir -p "$HOME/.local/bin" && install -m 755 "$WHEELHOUSE/uv" "$HOME/.local/bin/uv"
+    hash -r
+    log "[OK] uv $(uv --version 2>/dev/null | awk '{print $2}') (from wheelhouse)"
+else
+    log "Installing uv $UV_VERSION (found: ${UV_HAVE:-none})..."
+    curl -LsSf "https://astral.sh/uv/$UV_VERSION/install.sh" | sh
+    hash -r
+    UV_HAVE="$(uv --version 2>/dev/null | awk '{print $2}' || true)"
+    [ "$UV_HAVE" = "$UV_VERSION" ] || log "[WARN] uv on PATH is ${UV_HAVE:-none} (expected $UV_VERSION)"
+fi
+
+# Build/runtime deps: python3-dev (native ext builds), ffmpeg (Whisper),
+# tesseract-ocr (image/PDF OCR), ninja-build (FlashInfer JIT compile — prebuilt
+# may need manual install (see README); we warn instead of aborting so the rest can proceed.
+DEPS_PRESENT=1
+command -v ffmpeg >/dev/null 2>&1 || DEPS_PRESENT=0
+command -v tesseract >/dev/null 2>&1 || DEPS_PRESENT=0
+command -v ninja >/dev/null 2>&1 || DEPS_PRESENT=0
+if command -v dpkg >/dev/null 2>&1; then
+    dpkg -s python3-dev >/dev/null 2>&1 || DEPS_PRESENT=0
+elif command -v rpm >/dev/null 2>&1; then
+    rpm -q python3-devel >/dev/null 2>&1 || DEPS_PRESENT=0
+fi
+DEPS_OK=1
+if [ "$DEPS_PRESENT" -eq 1 ]; then
+    :  # already installed — skip privileged install entirely
+elif [ "$OFFLINE" -eq 1 ]; then
+    DEPS_OK=0
+elif command -v apt-get &>/dev/null; then
+    $SUDO apt-get update -qq || DEPS_OK=0
+    $SUDO apt-get install -y -qq python3-dev ffmpeg tesseract-ocr ninja-build || DEPS_OK=0
+elif command -v dnf &>/dev/null; then
+    $SUDO dnf install -y python3-devel ffmpeg tesseract ninja-build || DEPS_OK=0
+elif command -v yum &>/dev/null; then
+    $SUDO yum install -y python3-devel ffmpeg tesseract ninja-build || DEPS_OK=0
+else
+    DEPS_OK=0
+fi
+[ "$DEPS_OK" -eq 1 ] || echo "[WARN] 一部の system 依存 (python3-dev / ffmpeg / tesseract-ocr / ninja-build) を入れられませんでした。機能が失敗する場合は README を参照し手動導入してください。"
+
+VENV="$INSTALL_DIR/venv"
+# venv はその場で空から作り直す (= 途中で失敗したら、インストーラをもう一度流せば直る)
+rm -rf "$VENV"
+VENV_ARGS=(--python "$PYTHON_VER")
+[ "$OFFLINE" -eq 1 ] && VENV_ARGS+=(--no-python-downloads)
+if ! uv venv "${VENV_ARGS[@]}" "$VENV"; then
+    [ "$OFFLINE" -eq 0 ] || { log "[ERROR] Could not create venv with python$PYTHON_VER (offline: install it on this host)"; exit 1; }
+    log "[WARN] uv $(uv --version 2>/dev/null | awk '{print $2}') could not set up python$PYTHON_VER. Upgrading uv to latest and retrying..."
+    curl -LsSf https://astral.sh/uv/install.sh | sh
+    hash -r
+    rm -rf "$VENV"
+    uv venv "${VENV_ARGS[@]}" "$VENV" || { log "[ERROR] Could not create venv with python$PYTHON_VER"; exit 1; }
+fi
+echo "vllm" > "$VENV/.db-edition"
+echo "$VLLM_VERSION" > "$VENV/.db-engine-spec"
+
+PIP_ARGS=(--python "$VENV/bin/python")
+if [ "$OFFLINE" -eq 1 ]; then
+    PIP_ARGS+=(--no-index --find-links "$WHEELHOUSE")
+elif [ -n "$TORCH_INDEX" ]; then
+    PIP_ARGS+=(--extra-index-url "$TORCH_INDEX")
+else
+    PIP_ARGS+=(--torch-backend=auto)
+fi
+install_engine() {
+    case "$VLLM_VERSION" in
+        latest)  uv pip install -U "${PIP_ARGS[@]}" "vllm" ;;
+        nightly) uv pip install -U --prerelease=allow --index-strategy unsafe-best-match "${PIP_ARGS[@]}" \
+                     --extra-index-url https://wheels.vllm.ai/nightly "vllm" ;;
+        *)       uv pip install "${PIP_ARGS[@]}" "vllm==$VLLM_VERSION" ;;
+    esac
+}
+venv_fail() { log "[ERROR] $1 (run the installer again to retry)"; rm -f "$INSTALL_DIR/api.new"; exit 1; }
+log "Installing vLLM $VLLM_VERSION..."
+install_engine || venv_fail "vLLM install failed"
+
+if ! "$VENV/bin/python" -c "import torchaudio" >/dev/null 2>&1; then
+    log "[WARN] torchaudio is unusable (CUDA build mismatch with torch); removing it. Audio-input models will not be available."
+    uv pip uninstall --python "$VENV/bin/python" torchaudio >/dev/null 2>&1 || true
+fi
+"$VENV/bin/python" -c "import vllm" >/dev/null 2>&1 || venv_fail "vllm is not importable after install"
+VLLM_INSTALLED="$("$VENV/bin/python" -c "import importlib.metadata as m; print(m.version('vllm'))" 2>/dev/null || true)"
+case "$VLLM_VERSION" in
+    latest|nightly) ;;
+    *) [ "$VLLM_INSTALLED" = "$VLLM_VERSION" ] || venv_fail "vLLM $VLLM_INSTALLED is installed, expected $VLLM_VERSION" ;;
+esac
+log "[OK] vLLM $VLLM_INSTALLED"
+
+if [ "$OFFLINE" -eq 0 ]; then
+    TORCH_CUDA="$("$VENV/bin/python" -c "import torch; print((torch.version.cuda or '').replace('.', ''))" 2>/dev/null || true)"
+    FI_VER="$("$VENV/bin/python" -c "import importlib.metadata as m; print(m.version('flashinfer-python'))" 2>/dev/null || true)"
+    if [ -n "$TORCH_CUDA" ] && [ -n "$FI_VER" ]; then
+        if uv pip install --python "$VENV/bin/python" --index-url "https://flashinfer.ai/whl/cu${TORCH_CUDA}/" \
+               "flashinfer-jit-cache==$FI_VER" >/dev/null 2>&1; then
+            log "[OK] FlashInfer prebuilt kernels (flashinfer-jit-cache $FI_VER, cu${TORCH_CUDA})"
+        else
+            log "[INFO] No prebuilt FlashInfer kernels for cu${TORCH_CUDA} (FlashInfer $FI_VER): kernels are JIT-compiled (needs nvcc), otherwise the torch sampler is used"
+        fi
+    fi
+fi
+
+install_binary
+
+if [ "$OFFLINE" -eq 1 ] && [ -f "$WHEELHOUSE/hf-cache.tar" ]; then
+    HF_DIR="${HF_HOME:-$HOME/.cache/huggingface}"
+    mkdir -p "$HF_DIR" && tar -xf "$WHEELHOUSE/hf-cache.tar" -C "$HF_DIR"
+    log "[OK] model cache extracted to $HF_DIR"
+fi
+
+echo "[OK] Python venv ready"
+
+# Vite Edition: frontend is embedded in the API binary, no app.tar.gz needed
+
+DB_USER="${DB_USER:-digitalbase}"
+DB_PASS="${DB_PASS:-digitalbase}"
+DB_NAME="${DB_NAME:-digitalbase}"
+
+if [ -f "$INSTALL_DIR/.env" ]; then
+    CURRENT_BACKEND=$(grep -E "^LLM_BACKEND=" "$INSTALL_DIR/.env" | tail -1 | cut -d= -f2)
+    if [ -n "$CURRENT_BACKEND" ] && [ "$CURRENT_BACKEND" != "vllm" ]; then
+        echo ""
+        echo "[WARN] .env は LLM_BACKEND=$CURRENT_BACKEND のままです。この edition を使うには:"
+        echo "       $INSTALL_DIR/.env の LLM_BACKEND を vllm に変更して db restart してください"
+        echo ""
+    fi
+fi
+[ ! -f "$INSTALL_DIR/.env" ] && cat > "$INSTALL_DIR/.env" << EOF
+LLM_BACKEND=vllm
+DATABASE_URL=postgresql://${DB_USER}:${DB_PASS}@localhost:5432/${DB_NAME}
+JWT_SECRET=$(openssl rand -hex 32)
+VLLM_AUTO_START=true
+VLLM_EMBED_MODEL=Qwen/Qwen3-Embedding-0.6B
+VLLM_GPU_MEMORY_UTILIZATION_CHAT=0.70
+VLLM_GPU_MEMORY_UTILIZATION_EMBED=0.10
+WHISPER_MODEL=base
+LICENSE_FILE_PATH=$INSTALL_DIR/license.lic
+FILES_DIR=$INSTALL_DIR/files
+EOF
+
+# Database setup - parse DATABASE_URL from .env if it exists (for updates with custom DB config)
+if [ -f "$INSTALL_DIR/.env" ]; then
+    _DB_URL=$(grep -E "^DATABASE_URL=" "$INSTALL_DIR/.env" | head -1 | cut -d= -f2-)
+    if [ -n "$_DB_URL" ]; then
+        export DB_USER=$(echo "$_DB_URL" | sed -n 's|.*://\([^:]*\):.*|\1|p')
+        export DB_PASS=$(echo "$_DB_URL" | sed -n 's|.*://[^:]*:\([^@]*\)@.*|\1|p')
+        export DB_NAME=$(echo "$_DB_URL" | sed -n 's|.*/\([^?]*\).*|\1|p')
+    fi
+fi
+echo "Setting up database..."
+DB_USER="${DB_USER:-digitalbase}"
+DB_PASS="${DB_PASS:-digitalbase}"
+DB_NAME="${DB_NAME:-digitalbase}"
+
+if ! command -v psql &>/dev/null; then
+    echo "[ERROR] PostgreSQL がインストールされていません (pgvector 対応版・16 以降)。README 参照:"
+    echo "   apt install -y postgresql postgresql-\$(ls /usr/lib/postgresql 2>/dev/null | sort -V | tail -1)-pgvector"
+    exit 1
+fi
+if ! pg_isready -q 2>/dev/null; then
+    if command -v pg_ctlcluster &>/dev/null; then
+        PGVER=$(ls /etc/postgresql 2>/dev/null | sort -V | tail -1)
+        [ -n "$PGVER" ] && $SUDO pg_ctlcluster "$PGVER" main start 2>/dev/null || true
+    elif command -v systemctl &>/dev/null; then
+        $SUDO systemctl start postgresql 2>/dev/null || true
+    fi
+fi
+if ! pg_isready -q 2>/dev/null; then
+    echo "[ERROR] PostgreSQL に接続できません (localhost:5432)。手動起動してください:"
+    echo "   pg_ctlcluster <ver> main start   # systemd 無しコンテナ"
+    echo "   systemctl start postgresql       # systemd 環境"
+    exit 1
+fi
+
+if [ "$(PGPASSWORD="$DB_PASS" psql -h localhost -U "$DB_USER" -d "$DB_NAME" -tAc "SELECT 1 FROM pg_extension WHERE extname='vector'" 2>/dev/null)" = "1" ]; then
+    echo "[OK] Database already configured; setup skipped"
+else
+    if [ -z "$(pg_admin -tAc "SELECT 1 FROM pg_roles WHERE rolname='$DB_USER'" 2>/dev/null)" ]; then
+        pg_admin -c "CREATE USER $DB_USER WITH PASSWORD '$DB_PASS';" || echo "[WARN] CREATE USER $DB_USER に失敗"
+    fi
+    if [ -z "$(pg_admin -tAc "SELECT 1 FROM pg_database WHERE datname='$DB_NAME'" 2>/dev/null)" ]; then
+        pg_admin -c "CREATE DATABASE $DB_NAME OWNER $DB_USER;" || echo "[WARN] CREATE DATABASE $DB_NAME に失敗"
+    fi
+    pg_admin -c "ALTER USER $DB_USER CREATEDB;" >/dev/null 2>&1 || true
+    if ! pg_admin -d "$DB_NAME" -c "CREATE EXTENSION IF NOT EXISTS vector;" >/dev/null 2>&1; then
+        echo "[WARN] pgvector 拡張の有効化に失敗しました。RAG 機能を使う場合は:"
+        echo "   apt install -y postgresql-\$(psql -V | grep -oE '[0-9]+' | head -1)-pgvector"
+    fi
+    echo "[OK] Database setup complete (schemas and tables are created automatically on first startup)"
+fi
+
+cat > "$INSTALL_DIR/run.sh" << 'EOF'
+#!/bin/bash
+cd "$(dirname "$0")"
+set -a; [ -f .env ] && source .env; set +a
+
+_ts() { date -u +%Y-%m-%dT%H:%M:%SZ; }
+if [ -f .update-running ] && [ ! -f .update-requested ]; then
+    echo "$(_ts) [UPDATE] previous update was interrupted" >> update.log
+    printf 'result=interrupted\nexit_code=\nfinished_at=%s\n' "$(_ts)" > .update-result
+    rm -f .update-running
+fi
+if [ -f .update-requested ]; then
+    UPDATE_URL=$(head -1 .update-requested)
+    ENGINE_SPEC=$(sed -n 2p .update-requested)
+    PRODUCT_VERSION=$(sed -n 3p .update-requested)
+    rm -f .update-requested
+    touch .update-running
+    DB_INSTALL_DIR="$(pwd -P)"; export DB_INSTALL_DIR
+    if [ -n "$ENGINE_SPEC" ]; then DB_VLLM_VERSION="$ENGINE_SPEC"; DB_SGLANG_VERSION="$ENGINE_SPEC"; export DB_VLLM_VERSION DB_SGLANG_VERSION; fi
+    if [ -n "$PRODUCT_VERSION" ]; then DB_VERSION="$PRODUCT_VERSION"; export DB_VERSION; fi
+    echo "$(_ts) [UPDATE] running installer: $UPDATE_URL" >> update.log
+    echo "[UPDATE] running installer: $UPDATE_URL"
+    RC=1
+    if curl -fsSL "$UPDATE_URL" -o .update-installer.sh; then
+        if DB_NO_SERVICE=1 bash .update-installer.sh > .update-installer.out 2>&1; then RC=0; else RC=$?; fi
+        if [ "$RC" -ne 0 ]; then
+            echo "[UPDATE] installer failed (rc=$RC, see update.log)"
+            tail -n 40 .update-installer.out >> update.log
+        fi
+    else
+        echo "$(_ts) [UPDATE] installer download failed: $UPDATE_URL" >> update.log
+        echo "[UPDATE] installer download failed: $UPDATE_URL"
+    fi
+    if [ "$RC" -eq 0 ]; then
+        echo "$(_ts) [UPDATE] result: ok" >> update.log
+        printf 'result=ok\nexit_code=0\nfinished_at=%s\n' "$(_ts)" > .update-result
+    else
+        echo "$(_ts) [UPDATE] result: failed (rc=$RC). Run the update again" >> update.log
+        printf 'result=failed\nexit_code=%s\nfinished_at=%s\n' "$RC" "$(_ts)" > .update-result
+    fi
+    rm -f .update-installer.sh .update-running
+fi
+
+# CUDA 13+: Triton bundled ptxas is CUDA 12, need system ptxas
+CUDA_MAJOR=$(nvidia-smi 2>/dev/null | grep -oP 'CUDA Version: \K\d+' || true)
+[ "${CUDA_MAJOR:-0}" -ge 13 ] && [ -f /usr/local/cuda/bin/ptxas ] && export TRITON_PTXAS_PATH=/usr/local/cuda/bin/ptxas
+
+unset _MEIPASS2 _PYI_ARCHIVE_FILE _PYI_PARENT_PROCESS_LEVEL _PYI_APPLICATION_HOME_DIR
+
+exec ./api
+EOF
+chmod +x "$INSTALL_DIR/run.sh"
+
+cat > "$INSTALL_DIR/start.sh" << 'EOF'
+#!/bin/bash
+cd "$(dirname "$0")"
+set -a; [ -f .env ] && source .env; set +a
+
+if systemctl is-active --quiet db 2>/dev/null; then
+    echo "db.service が稼働中です。操作は: db {start|stop|restart|status|logs}"
+    exit 1
+fi
+
+# Check dependencies
+
+pg_isready -q 2>/dev/null || { echo "[ERROR] PostgreSQL not running"; exit 1; }
+
+# Check NVIDIA GPU (vLLM requires CUDA)
+if ! command -v nvidia-smi &>/dev/null; then
+    echo "[WARN] nvidia-smi not found. vLLM requires NVIDIA GPU with CUDA."
+fi
+
+[ -f api.pid ] && kill "$(cat api.pid)" 2>/dev/null
+HERE="$(pwd -P)"
+for p in $(pgrep -fx "./api" 2>/dev/null; pgrep -fx "$HERE/api" 2>/dev/null); do
+    [ "$(readlink /proc/$p/cwd 2>/dev/null)" = "$HERE" ] && kill "$p" 2>/dev/null
+done
+for _ in $(seq 1 30); do
+    ALIVE=0
+    for p in $(pgrep -fx "./api" 2>/dev/null; pgrep -fx "$HERE/api" 2>/dev/null); do
+        [ "$(readlink /proc/$p/cwd 2>/dev/null)" = "$HERE" ] && ALIVE=1
+    done
+    [ "$ALIVE" -eq 0 ] && break
+    sleep 1
+done
+
+echo "Starting AI Server (vLLM Edition)..."
+
+./run.sh &
+API_PID=$!
+echo "$API_PID" > api.pid
+
+echo "[OK] Started - http://localhost:${API_PORT:-8000}"
+
+# Show LAN IP
+LAN_IP=$(ip -4 addr show 2>/dev/null | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | grep -v '127.0.0.1' | head -n1)
+[ -n "$LAN_IP" ] && echo "LAN: http://$LAN_IP:${API_PORT:-8000}"
+
+# Show mDNS hostname if Avahi is running
+if systemctl is-active --quiet avahi-daemon 2>/dev/null; then
+    echo "mDNS: http://$(hostname).local:${API_PORT:-8000}"
+fi
+
+echo ""
+echo "vLLM endpoints: chat=${VLLM_BASE_URL:-http://localhost:8080}, embed=${VLLM_EMBED_BASE_URL:-http://localhost:8081}"
+
+echo ""
+echo "Press Ctrl+C to stop"
+
+trap "kill $API_PID 2>/dev/null; rm -f api.pid; echo 'Stopped'" EXIT
+wait
+EOF
+chmod +x "$INSTALL_DIR/start.sh"
+
+cat > "$INSTALL_DIR/stop.sh" << 'EOF'
+#!/bin/bash
+cd "$(dirname "$0")"
+if systemctl is-active --quiet db 2>/dev/null; then
+    SCTL="systemctl"; [ "$(id -u)" -ne 0 ] && command -v sudo &>/dev/null && SCTL="sudo -n systemctl"
+    $SCTL stop db && { echo "Stopped (systemd)"; exit 0; }
+    echo "Failed to stop db.service (root required): sudo systemctl stop db"; exit 1
+fi
+# Kill start.sh first (which will trigger its trap to kill API/Web)
+pkill -f "db/start\.sh" 2>/dev/null
+sleep 1
+[ -f api.pid ] && kill "$(cat api.pid)" 2>/dev/null && rm -f api.pid
+HERE="$(pwd -P)"
+for p in $(pgrep -fx "./api" 2>/dev/null; pgrep -fx "$HERE/api" 2>/dev/null); do
+    [ "$(readlink /proc/$p/cwd 2>/dev/null)" = "$HERE" ] && kill "$p" 2>/dev/null
+done
+echo "Stopped"
+EOF
+chmod +x "$INSTALL_DIR/stop.sh"
+
+SYSTEMD_OK=0
+if [ -z "$DB_NO_SERVICE" ] && [ -d /run/systemd/system ] && command -v systemctl &>/dev/null && { [ "$(id -u)" -eq 0 ] || [ -n "$SUDO" ]; }; then
+    UNIT_TMP=$(mktemp)
+    cat > "$UNIT_TMP" << UNIT
+[Unit]
+Description=DigitalBase AI Server
+After=network-online.target postgresql.service
+Wants=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=$(id -un)
+WorkingDirectory=$INSTALL_DIR
+ExecStart=$INSTALL_DIR/run.sh
+Restart=always
+RestartSec=5
+TimeoutStopSec=180
+LimitNOFILE=65535
+SyslogIdentifier=db
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+    if $SUDO install -o root -g root -m 644 "$UNIT_TMP" /etc/systemd/system/db.service \
+        && $SUDO systemctl daemon-reload; then
+        rm -f "$UNIT_TMP"
+        $SUDO systemctl enable db >/dev/null 2>&1 || true
+        $SUDO systemctl disable digitalbase >/dev/null 2>&1 || true
+        SYSTEMD_OK=1
+        echo "[OK] systemd unit 登録 (db.service = ブート自動起動 + クラッシュ自動復帰)"
+    else
+        rm -f "$UNIT_TMP"
+        echo "[WARN] systemd unit の登録に失敗しました (従来の start.sh 起動で動作します)"
+    fi
+fi
+
+cat > "$INSTALL_DIR/db" << EOF
+#!/bin/bash
+DB_HOME="\${DB_HOME:-$INSTALL_DIR}"
+EOF
+cat >> "$INSTALL_DIR/db" << 'EOF'
+if [ -f /etc/systemd/system/db.service ] && [ -d /run/systemd/system ]; then
+    SCTL="systemctl"; JCTL="journalctl"
+    [ "$(id -u)" -ne 0 ] && command -v sudo &>/dev/null && { SCTL="sudo systemctl"; JCTL="sudo journalctl"; }
+    RUN=""; [ "$(id -u)" -ne 0 ] && command -v sudo &>/dev/null && RUN="sudo"   # worker / config は service と同じ root で (.env を読む)
+    case "$1" in
+        start)    $SCTL start db ;;
+        stop)     $SCTL stop db ;;
+        restart)  $SCTL restart db ;;
+        worker)   shift; cd "$DB_HOME" && exec $RUN ./api worker "$@" ;;
+        config)   shift; cd "$DB_HOME" && exec $RUN ./api config "$@" ;;
+        version)  cd "$DB_HOME" && exec ./api --version ;;
+        status)   $SCTL status db --no-pager ;;
+        logs)     $JCTL -u db -f ;;
+        *)        echo "Usage: db {start|stop|restart|status|logs|worker [--pool NAME]|config list [--all]|version}"; exit 1 ;;
+    esac
+    exit $?
+fi
+case "$1" in
+    start)    "$DB_HOME/start.sh" ;;
+    stop)     "$DB_HOME/stop.sh" ;;
+    worker)   shift; cd "$DB_HOME" && exec ./api worker "$@" ;;
+    config)   shift; cd "$DB_HOME" && exec ./api config "$@" ;;
+    version)  cd "$DB_HOME" && exec ./api --version ;;
+    *)        echo "Usage: db {start|stop|worker [--pool NAME]|config list [--all]|version}"; exit 1 ;;
+esac
+EOF
+chmod +x "$INSTALL_DIR/db"
+
+if [ "$(readlink /usr/local/bin/db 2>/dev/null)" = "$INSTALL_DIR/db" ]; then
+    :
+elif [ -z "$SUDO" ] && [ "$(id -u)" -ne 0 ]; then
+    echo "[WARN] Run: sudo ln -sf $INSTALL_DIR/db /usr/local/bin/db"
+else
+    $SUDO ln -sf "$INSTALL_DIR/db" /usr/local/bin/db 2>/dev/null || echo "[WARN] Run: ln -sf $INSTALL_DIR/db /usr/local/bin/db"
+fi
+
+echo ""
+if [ "$SYSTEMD_OK" -eq 1 ] && [ "${WAS_ACTIVE:-0}" -eq 1 ]; then
+    $SUDO systemctl start db 2>/dev/null && echo "[OK] 更新完了、db.service を再開しました" || true
+fi
+echo "Done. Edit $INSTALL_DIR/.env then run: db start"
+[ "$SYSTEMD_OK" -eq 1 ] && echo "      (systemd 管理: ブート時自動起動。ログは db logs / journalctl -u db)"
+echo "      Models are cached at ~/.cache/huggingface/hub/"

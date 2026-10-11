@@ -1,0 +1,30 @@
+# DigitalBase — vLLM を AMD GPU (ROCm) で上げる (docker-compose.vllm.yml に重ねる)
+#
+#   docker compose -f docker-compose.yml -f docker-compose.vllm.yml -f docker-compose.vllm-rocm.yml up -d
+
+services:
+  vllm-chat:
+    image: vllm/vllm-openai-rocm:${VLLM_IMAGE_TAG:-latest}
+    deploy: !reset {}
+    devices:
+      - /dev/kfd
+      - /dev/dri
+    group_add:
+      - video
+    cap_add:
+      - SYS_PTRACE
+    security_opt:
+      - seccomp=unconfined
+
+  vllm-embed:
+    image: vllm/vllm-openai-rocm:${VLLM_IMAGE_TAG:-latest}
+    deploy: !reset {}
+    devices:
+      - /dev/kfd
+      - /dev/dri
+    group_add:
+      - video
+    cap_add:
+      - SYS_PTRACE
+    security_opt:
+      - seccomp=unconfined

@@ -1,0 +1,22 @@
+# DigitalBase — vLLM を Intel GPU (XPU) で上げる (docker-compose.vllm.yml に重ねる)
+#
+#   docker compose -f docker-compose.yml -f docker-compose.vllm.yml -f docker-compose.vllm-xpu.yml up -d
+
+services:
+  vllm-chat:
+    image: vllm/vllm-openai-xpu:${VLLM_IMAGE_TAG:-latest}
+    deploy: !reset {}
+    devices:
+      - /dev/dri:/dev/dri
+    volumes:
+      - /dev/dri/by-path:/dev/dri/by-path
+    privileged: true
+
+  vllm-embed:
+    image: vllm/vllm-openai-xpu:${VLLM_IMAGE_TAG:-latest}
+    deploy: !reset {}
+    devices:
+      - /dev/dri:/dev/dri
+    volumes:
+      - /dev/dri/by-path:/dev/dri/by-path
+    privileged: true
