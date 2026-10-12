@@ -148,7 +148,7 @@ cat << EOF
 
 [OK] DigitalBase  http://localhost:$PORT   (admin@local / admin123)
   settings : $INSTALL_DIR/.env
-  data     : $INSTALL_DIR/data, postgres-data, hf-cache
+  data     : $INSTALL_DIR/data, postgres-data, hf-cache, stt-model
   license  : put it at $INSTALL_DIR/data/license.lic (or upload it in Admin > License)
   cd $INSTALL_DIR && docker compose logs -f app | down | up -d
   update   : run this installer again
