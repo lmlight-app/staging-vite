@@ -19,7 +19,7 @@ usage() {
     cat << 'USAGE'
 Usage: install-docker.sh [--platform none|cuda|rocm|xpu] [--version VERSION] [--port PORT]
   --platform  vLLM in the same stack: cuda (NVIDIA) | rocm (AMD) | xpu (Intel) | none (default: as recorded in .env, else none; env DB_PLATFORM)
-  --version   DigitalBase version: latest | YY.MMDD[.N] | xYYYYMMDD[.N] (default: as recorded in .env, else latest; env DB_VERSION)
+  --version   DigitalBase version: latest | YY.MMDD[.N] | YYYYMMDD[.N] | xYYYYMMDD[.N] (default: as recorded in .env, else latest; env DB_VERSION)
   --port      host port (default: as recorded in .env, else 8000; env APP_PORT)
   env DB_INSTALL_DIR (default ~/digitalbase)
 USAGE
@@ -27,7 +27,7 @@ USAGE
 while [ $# -gt 0 ]; do
     case "$1" in
         --platform) PLATFORM="${2:?--platform requires none|cuda|rocm|xpu}"; shift ;;
-        --version) VERSION="${2:?--version requires latest|YY.MMDD[.N]|xYYYYMMDD[.N]}"; shift ;;
+        --version) VERSION="${2:?--version requires latest|YY.MMDD[.N]|YYYYMMDD[.N]|xYYYYMMDD[.N]}"; shift ;;
         --port) PORT_ARG="${2:?--port requires a number}"; shift ;;
         -h|--help) usage; exit 0 ;;
         *) echo "[ERROR] Unknown option: $1"; usage; exit 2 ;;
@@ -36,8 +36,8 @@ while [ $# -gt 0 ]; do
 done
 case "$PLATFORM" in ""|none|cuda|rocm|xpu) ;; *) echo "[ERROR] --platform must be none, cuda, rocm or xpu (got: $PLATFORM)"; exit 2 ;; esac
 if [ -n "$VERSION" ]; then
-    printf '%s' "$VERSION" | grep -Eq '^(latest|[0-9]{2}\.[0-9]{4}(\.[0-9]+)?|x[0-9]{8}(\.[0-9]+)?)$' \
-        || { echo "[ERROR] --version must be latest, a version (YY.MMDD[.N]), or a release tag (xYYYYMMDD[.N])"; exit 2; }
+    printf '%s' "$VERSION" | grep -Eq '^(latest|[0-9]{2}\.[0-9]{4}(\.[0-9]+)?|x?[0-9]{8}(\.[0-9]+)?)$' \
+        || { echo "[ERROR] --version must be latest, a version (YY.MMDD[.N]), or an image tag (YYYYMMDD[.N])"; exit 2; }
 fi
 if [ -n "$PORT_ARG" ]; then
     printf '%s' "$PORT_ARG" | grep -Eq '^[0-9]{1,5}$' || { echo "[ERROR] --port must be a number (got: $PORT_ARG)"; exit 2; }
@@ -53,6 +53,15 @@ fi
 
 mkdir -p "$INSTALL_DIR/data" "$INSTALL_DIR/postgres-data"
 cd "$INSTALL_DIR"
+PROJECT="$([ ! -f .env ] || awk -F= '$1 == "COMPOSE_PROJECT_NAME" { v = $2 } END { print v }' .env)"
+PROJECT="${PROJECT:-digitalbase}"
+OTHER="$(docker ps -a --filter "label=com.docker.compose.project=$PROJECT" --format '{{.Label "com.docker.compose.project.working_dir"}}' | sort -u | grep -vx "$(pwd -P)" | head -1 || true)"
+if [ -n "$OTHER" ]; then
+    echo "[ERROR] The DigitalBase stack in $OTHER already uses the name '$PROJECT'. Nothing was changed."
+    echo "        To update it: DB_INSTALL_DIR=$OTHER bash install-docker.sh"
+    echo "        To run a second stack: set COMPOSE_PROJECT_NAME=<other name> and APP_PORT in $INSTALL_DIR/.env, then run this again"
+    exit 1
+fi
 for f in docker-compose.yml docker.env.example; do
     curl -fsSL "${BASE_URL%/}/$f" -o "$f.tmp" || { rm -f "$f.tmp"; echo "[ERROR] Could not download $f ($BASE_URL)"; exit 1; }
     mv "$f.tmp" "$f"
@@ -79,6 +88,24 @@ fi
 [ -n "$PLATFORM" ] || PLATFORM="$(env_get COMPOSE_PROFILES)"
 case "$PLATFORM" in cuda|rocm|xpu) ;; *) PLATFORM=none ;; esac
 case "$PLATFORM:$(uname -m)" in rocm:aarch64|rocm:arm64|xpu:aarch64|xpu:arm64) echo "[ERROR] the $PLATFORM image of vLLM is x86_64 only"; exit 2 ;; esac
+case "$VERSION" in
+    "") TAG="$(env_get DB_IMAGE_TAG)" ;;
+    latest) TAG="" ;;
+    x*|[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]*) TAG="${VERSION#x}" ;;
+    *) TAG="$(printf '%s' "$VERSION" | sed -E 's/^([0-9]{2})\.([0-9]{4})/20\1\2/')" ;;
+esac
+PORT="${PORT_ARG:-$(env_get APP_PORT)}"; PORT="${PORT:-8000}"
+
+case "$PLATFORM" in
+    cuda) docker info 2>/dev/null | grep -qi nvidia || { echo "[ERROR] NVIDIA Container Toolkit not found, so the cuda profile cannot start. Nothing was changed: https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/"; exit 1; } ;;
+    rocm) [ -e /dev/kfd ] || { echo "[ERROR] /dev/kfd not found: install the AMD GPU driver (amdgpu) on the host. Nothing was changed"; exit 1; } ;;
+    xpu)  ls /dev/dri/renderD* >/dev/null 2>&1 || { echo "[ERROR] /dev/dri/renderD* not found: install the Intel GPU driver on the host. Nothing was changed"; exit 1; } ;;
+esac
+PROFILES=""; [ "$PLATFORM" = "none" ] || PROFILES="$PLATFORM"
+echo "DigitalBase (Docker): $INSTALL_DIR, port $PORT, image ${TAG:-latest}, vLLM $PLATFORM"
+COMPOSE_PROFILES="$PROFILES" DB_IMAGE_TAG="$TAG" docker compose pull \
+    || { echo "[ERROR] Could not pull the images (lmlight/digitalbase:${TAG:-latest}). Nothing was changed"; exit 1; }
+
 if [ "$PLATFORM" = "none" ]; then
     [ -z "$(env_get COMPOSE_PROFILES)" ] || env_set COMPOSE_PROFILES ""
     if [ "$(env_get VLLM_BASE_URL)" = "http://vllm-chat:8000" ]; then
@@ -92,29 +119,18 @@ else
     env_set VLLM_BASE_URL "http://vllm-chat:8000"
     env_set VLLM_EMBED_BASE_URL "http://vllm-embed:8000"
 fi
-case "$VERSION" in
-    "") ;;
-    latest) env_unset DB_IMAGE_TAG ;;
-    x*) env_set DB_IMAGE_TAG "${VERSION#x}" ;;
-    *) env_set DB_IMAGE_TAG "$(printf '%s' "$VERSION" | sed -E 's/^([0-9]{2})\.([0-9]{4})/20\1\2/')" ;;
-esac
+if [ -z "$TAG" ]; then
+    [ -z "$(env_get DB_IMAGE_TAG)" ] || env_unset DB_IMAGE_TAG
+else
+    env_set DB_IMAGE_TAG "$TAG"
+fi
 [ -z "$PORT_ARG" ] || env_set APP_PORT "$PORT_ARG"
-PORT="$(env_get APP_PORT)"; PORT="${PORT:-8000}"
 
-case "$PLATFORM" in
-    cuda) docker info 2>/dev/null | grep -qi nvidia || echo "[WARN] NVIDIA Container Toolkit not found: https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/" ;;
-    rocm) [ -e /dev/kfd ] || echo "[WARN] /dev/kfd not found: install the AMD GPU driver (amdgpu) on the host" ;;
-    xpu)  ls /dev/dri/renderD* >/dev/null 2>&1 || echo "[WARN] /dev/dri not found: install the Intel GPU driver on the host" ;;
-esac
-
-TAG="$(env_get DB_IMAGE_TAG)"
-echo "DigitalBase (Docker): $INSTALL_DIR, port $PORT, image ${TAG:-latest}, vLLM $PLATFORM"
 ACTIVE="$(docker compose config --services)"
 for service in $(docker compose --profile '*' config --services); do
     printf '%s\n' "$ACTIVE" | grep -qx "$service" && continue
     if [ -n "$(docker compose --profile '*' ps -aq "$service" 2>/dev/null)" ]; then docker compose --profile '*' rm -sf "$service"; fi
 done
-docker compose pull
 docker compose up -d --remove-orphans
 
 printf 'Waiting for the app'

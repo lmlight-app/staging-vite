@@ -68,17 +68,18 @@ install_binary() {
     chmod +x "$INSTALL_DIR/api.new"
     mv -f "$INSTALL_DIR/api.new" "$INSTALL_DIR/api"
     # 退避物 (api.prev / venv.prev 等) が残っていれば片付ける (= 前のバージョンへはバージョンを指定したインストールで戻す)
-    rm -rf "$INSTALL_DIR/api.prev" "$INSTALL_DIR/api.rollback" "$INSTALL_DIR/VERSION.prev" "$INSTALL_DIR/VERSION.rollback" \
+    rm -rf "$INSTALL_DIR/api.prev" "$INSTALL_DIR/api.rollback" "$INSTALL_DIR/VERSION" "$INSTALL_DIR/VERSION.prev" "$INSTALL_DIR/VERSION.rollback" \
            "$INSTALL_DIR/venv.prev" "$INSTALL_DIR/venv.rollback" "$INSTALL_DIR/venv.new"
     log "[OK] binary installed"
-    if [ -n "$TARGET_VERSION" ]; then
-        printf '%s\n' "$TARGET_VERSION" > "$INSTALL_DIR/VERSION"
-    fi
 }
 
 version_lt() { awk -v a="$1" -v b="$2" 'BEGIN { n = split(a, x, "."); m = split(b, y, "."); k = (n > m) ? n : m
     for (i = 1; i <= k; i++) { p = (i <= n) ? x[i] + 0 : 0; q = (i <= m) ? y[i] + 0 : 0; if (p < q) exit 0; if (p > q) exit 1 } exit 1 }'; }
-INSTALLED_VERSION="$(cat "$INSTALL_DIR/VERSION" 2>/dev/null || true)"
+INSTALLED_VERSION=""
+if [ -x "$INSTALL_DIR/api" ] && [ -n "$(find "$INSTALL_DIR/api" -newermt 2026-09-24 2>/dev/null)" ]; then
+    INSTALLED_VERSION="$("$INSTALL_DIR/api" --version 2>/dev/null | awk '{print $NF}' || true)"
+fi
+printf '%s' "$INSTALLED_VERSION" | grep -Eq '^[0-9]{2}\.[0-9]{4}(\.[0-9]+)?$' || INSTALLED_VERSION=""
 if [ -n "$TARGET_VERSION" ] && [ -n "$INSTALLED_VERSION" ] && version_lt "$TARGET_VERSION" "$INSTALLED_VERSION"; then
     log "[WARN] $TARGET_VERSION is older than the installed $INSTALLED_VERSION. Data written by the newer version may become unreadable."
 fi

@@ -79,12 +79,14 @@ fi
 mkdir -p "$TARGET_DIR"
 SOURCE="$BASE_URL"
 [ "$OFFLINE" -eq 0 ] || SOURCE="$OFFLINE_DIR"
+PROGRESS="-sS"
+[ ! -t 2 ] || PROGRESS="--progress-bar"
 fetch() {
     if [ "$OFFLINE" -eq 1 ]; then
         [ -f "$OFFLINE_DIR/$1" ] || return 1
         cp -f "$OFFLINE_DIR/$1" "$2"
     else
-        curl -fL --connect-timeout 30 --max-time 0 --retry 3 --retry-delay 5 "$BASE_URL/$1" -o "$2"
+        curl -fL $PROGRESS --connect-timeout 30 --max-time 0 --retry 3 --retry-delay 5 "$BASE_URL/$1" -o "$2"
     fi
 }
 if [ -z "$TARGET_VERSION" ]; then
@@ -132,8 +134,10 @@ if [ -n "$BUNDLE_DIR" ]; then
     fetch latest.json "$TARGET_DIR/latest.json" 2>/dev/null || true
     curl -fsSL "${SCRIPTS_URL%/}/install-linux.sh" -o "$TARGET_DIR/install-linux.sh" || { echo "[ERROR] Could not download install-linux.sh"; exit 1; }
     RUN_DIR="$(mktemp -d)"
+    trap 'rm -rf "$RUN_DIR"' EXIT
     cp "$BIN" "$RUN_DIR/api" && chmod +x "$RUN_DIR/api"
-    exec "$RUN_DIR/api" setup --bundle "$TARGET_DIR" --product-version "$TARGET_VERSION" "${PASS[@]}"
+    "$RUN_DIR/api" setup --bundle "$TARGET_DIR" --product-version "$TARGET_VERSION" "${PASS[@]}"
+    exit $?
 fi
 chmod +x "$BIN"
 
