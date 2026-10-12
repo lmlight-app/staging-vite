@@ -5,6 +5,7 @@
 #
 # 設定は同じ dir の .env (雛形: docker.env.example)。.env の全行がアプリに渡る。
 # vLLM を同じ stack で動かす: .env の COMPOSE_PROFILES に cuda (NVIDIA) / rocm (AMD) / xpu (Intel) のどれか 1 つ。
+# 読み上げ (Kokoro): COMPOSE_PROFILES に tts を足し (例: tts / cuda,tts)、.env に TTS_ENGINE=openai / TTS_BASE_URL=http://tts:8880/v1 / TTS_MODEL=kokoro / TTS_VOICE=jf_alpha。
 # データ: data/ (ファイル・license.lic・鍵)、postgres-data/ (DB)、hf-cache/ (vLLM のモデル)、stt-model/whisper/ (文字起こしのモデル、任意)。この dir ごとバックアップする。
 # 更新: install-docker.sh を再実行 (または docker compose pull && docker compose up -d --remove-orphans)。要 Docker Compose v2.24 以降。
 
@@ -109,6 +110,11 @@ services:
     volumes:
       - ./data:/app/data
       - ${STT_MODEL_DIR:-./stt-model}:/app/stt-model
+
+  tts:
+    image: ghcr.io/remsky/kokoro-fastapi-cpu:${TTS_IMAGE_TAG:-latest}
+    restart: unless-stopped
+    profiles: [tts]
 
   vllm-chat-cuda:
     <<: [*vllm, *cuda]

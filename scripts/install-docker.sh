@@ -88,7 +88,9 @@ if [ ! -f .env ]; then
     echo "[OK] Created $INSTALL_DIR/.env"
 fi
 
-[ -n "$PLATFORM" ] || PLATFORM="$(env_get COMPOSE_PROFILES)"
+RECORDED="$(env_get COMPOSE_PROFILES | tr ',' '\n')"
+EXTRA="$(printf '%s\n' "$RECORDED" | grep -vxE 'cuda|rocm|xpu' | grep -v '^$' | paste -sd, - || true)"
+[ -n "$PLATFORM" ] || PLATFORM="$(printf '%s\n' "$RECORDED" | grep -xE 'cuda|rocm|xpu' | head -1 || true)"
 case "$PLATFORM" in cuda|rocm|xpu) ;; *) PLATFORM=none ;; esac
 case "$PLATFORM:$(uname -m)" in rocm:aarch64|rocm:arm64|xpu:aarch64|xpu:arm64) echo "[ERROR] the $PLATFORM image of vLLM is x86_64 only"; exit 2 ;; esac
 case "$VERSION" in
@@ -104,20 +106,20 @@ case "$PLATFORM" in
     rocm) [ -e /dev/kfd ] || { echo "[ERROR] /dev/kfd not found: install the AMD GPU driver (amdgpu) on the host. Nothing was changed"; exit 1; } ;;
     xpu)  ls /dev/dri/renderD* >/dev/null 2>&1 || { echo "[ERROR] /dev/dri/renderD* not found: install the Intel GPU driver on the host. Nothing was changed"; exit 1; } ;;
 esac
-PROFILES=""; [ "$PLATFORM" = "none" ] || PROFILES="$PLATFORM"
+PROFILES="$(printf '%s\n' "$([ "$PLATFORM" = "none" ] || echo "$PLATFORM")" "$EXTRA" | grep -v '^$' | paste -sd, - || true)"
 echo "DigitalBase (Docker): $INSTALL_DIR, port $PORT, image ${TAG:-latest}, vLLM $PLATFORM"
 COMPOSE_PROFILES="$PROFILES" DB_IMAGE_TAG="$TAG" docker compose pull \
     || { echo "[ERROR] Could not pull the images (lmlight/digitalbase:${TAG:-latest}). Nothing was changed"; exit 1; }
 
 if [ "$PLATFORM" = "none" ]; then
-    [ -z "$(env_get COMPOSE_PROFILES)" ] || env_set COMPOSE_PROFILES ""
+    [ "$(env_get COMPOSE_PROFILES)" = "$PROFILES" ] || env_set COMPOSE_PROFILES "$PROFILES"
     if [ "$(env_get VLLM_BASE_URL)" = "http://vllm-chat:8000" ]; then
         env_set LLM_BACKEND ollama
         env_unset VLLM_BASE_URL
         env_unset VLLM_EMBED_BASE_URL
     fi
 else
-    env_set COMPOSE_PROFILES "$PLATFORM"
+    env_set COMPOSE_PROFILES "$PROFILES"
     env_set LLM_BACKEND vllm
     env_set VLLM_BASE_URL "http://vllm-chat:8000"
     env_set VLLM_EMBED_BASE_URL "http://vllm-embed:8000"
