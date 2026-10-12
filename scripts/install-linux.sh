@@ -1,6 +1,11 @@
 #!/bin/bash
-# AI Server Installer for Linux (Vite Edition)
-# Single binary with embedded frontend - no Node.js required
+# DigitalBase installer for Linux
+#
+#   curl -fsSL https://raw.githubusercontent.com/lmlight-app/staging-vite/main/scripts/install-linux.sh | bash
+#   curl -fsSL .../install-linux.sh | bash -s -- --engine vllm                  # GPU (NVIDIA)。AMD は --platform rocm、Intel は --platform xpu
+#   curl -fsSL .../install-linux.sh | bash -s -- --version 26.1010.3
+#   curl -fsSL .../install-linux.sh | bash -s -- --bundle /media/usb/db [--engine vllm]   # make an offline bundle (installs nothing here)
+#   bash /media/usb/db/install-linux.sh                                          # offline host: install or update from the bundle
 set -e
 
 if [ -z "$HOME" ] || [ "$HOME" = "/" ]; then
@@ -12,48 +17,44 @@ fi
 BASE_URL="${DB_BASE_URL:-https://github.com/lmlight-app/dist_vite/releases/latest/download}"
 VERSION_BASE_URL="https://github.com/lmlight-app/dist_vite/releases/download/"
 INSTALL_DIR="${DB_INSTALL_DIR:-$HOME/.local/db}"
+SCRIPTS_URL="${DB_SCRIPTS_URL:-https://raw.githubusercontent.com/lmlight-app/staging-vite/main/scripts/}"
+MIN_SETUP_VERSION="26.1012"
 ARCH="$(uname -m)"
-case "$ARCH" in x86_64|amd64) ARCH="amd64" ;; aarch64|arm64) ARCH="arm64" ;; esac
+case "$ARCH" in x86_64|amd64) ARCH="amd64" ;; aarch64|arm64) ARCH="arm64" ;; *) echo "[ERROR] unsupported CPU: $ARCH"; exit 1 ;; esac
+BINARY_NAME="lmlight-vite-linux-$ARCH"
 
-echo "Installing AI Server Vite Edition ($ARCH) to $INSTALL_DIR"
-
-# ── Privilege helper: support root-without-sudo (minimal GPU containers) ──
-if [ "$(id -u)" -eq 0 ]; then
-    SUDO=""
-elif command -v sudo &>/dev/null; then
-    SUDO="sudo"
-else
-    SUDO=""
-    echo "[WARN] root でも sudo でもありません。特権操作 (postgres / symlink) が失敗する可能性があります。"
-fi
-[ -t 0 ] || { [ -n "$SUDO" ] && SUDO="sudo -n"; }
-
-# Run psql as the postgres superuser. Handles: non-root+sudo, root w/o sudo (su), fallback.
-pg_admin() {
-    if [ -n "$SUDO" ]; then
-        $SUDO -u postgres psql "$@"
-    elif [ "$(id -u)" -eq 0 ]; then
-        su postgres -c "psql $(printf '%q ' "$@")"
-    else
-        psql "$@"
-    fi
-}
-
-WITH_OLLAMA="${DB_WITH_OLLAMA:-0}"
+DB_VERSION="${DB_VERSION:-latest}"
+OFFLINE_DIR="${DB_WHEELHOUSE:-}"
+OFFLINE=0
+BUNDLE_DIR=""
+PASS=()
 while [ $# -gt 0 ]; do
     case "$1" in
-        --with-ollama) WITH_OLLAMA=1 ;;
         --version) DB_VERSION="${2:?--version requires latest|YY.MMDD[.N]|xYYYYMMDD[.N][-linux]}"; shift ;;
-        -h|--help) echo "Usage: install-linux.sh [--with-ollama] [--version VERSION]"; exit 0 ;;
-        *) echo "[ERROR] Unknown option: $1 (usage: install-linux.sh [--with-ollama] [--version VERSION])"; exit 2 ;;
+        --offline)
+            OFFLINE=1
+            if [ -n "${2:-}" ] && [ "${2#-}" = "$2" ]; then OFFLINE_DIR="$2"; shift; fi ;;
+        --wheelhouse) OFFLINE_DIR="${2:?--wheelhouse requires DIR}"; shift ;;
+        --bundle) BUNDLE_DIR="${2:?--bundle requires DIR}"; shift ;;
+        -h|--help)
+            echo "Usage: install-linux.sh [--engine ollama|vllm|sglang] [--platform cuda|rocm|xpu] [--version VERSION] [--offline DIR | --bundle DIR [--with-models]] [other options of 'api setup']"
+            exit 0 ;;
+        *) PASS+=("$1") ;;
     esac
     shift
 done
-DB_VERSION="${DB_VERSION:-latest}"
+[ "$OFFLINE" -eq 0 ] || [ -n "$OFFLINE_DIR" ] || { echo "[ERROR] --offline requires DIR (or --wheelhouse DIR)"; exit 2; }
+if [ -z "$OFFLINE_DIR" ] && [ -z "$BUNDLE_DIR" ] && [ -f "$0" ] && [ -f "$(dirname "$0")/bundle.json" ]; then
+    OFFLINE_DIR="$(dirname "$0")"
+fi
+[ -z "$BUNDLE_DIR" ] || [ -z "$OFFLINE_DIR" ] || { echo "[ERROR] --bundle cannot be combined with --offline"; exit 2; }
+[ -z "$OFFLINE_DIR" ] || { OFFLINE=1; OFFLINE_DIR="$(cd "$OFFLINE_DIR" && pwd -P)"; }
 printf '%s' "$DB_VERSION" | grep -Eq '^(latest|[0-9]{2}\.[0-9]{4}(\.[0-9]+)?|x[0-9]{8}(\.[0-9]+)?(-[a-z0-9]+)?)$' \
     || { echo "[ERROR] --version must be latest, a version (YY.MMDD[.N]), or a release tag (xYYYYMMDD[.N][-linux])"; exit 2; }
+
 TARGET_VERSION=""
 if [ "$DB_VERSION" != "latest" ]; then
+    [ "$OFFLINE" -eq 0 ] || { echo "[ERROR] --version cannot be combined with --offline (the offline directory decides the version)"; exit 2; }
     RELEASE_REF="$DB_VERSION"
 # BEGIN staging-only
     case "$RELEASE_REF" in
@@ -70,376 +71,74 @@ if [ "$DB_VERSION" != "latest" ]; then
     [ -n "${DB_BASE_URL:-}" ] || BASE_URL="${VERSION_BASE_URL}${RELEASE_REF}"
     TARGET_VERSION="$(printf '%s' "$RELEASE_REF" | sed -E 's/^x20([0-9]{2})([0-9]{4})/\1.\2/; s/-[a-z0-9]+$//')"
 fi
-if ! command -v ollama >/dev/null 2>&1; then
-    if [ "$WITH_OLLAMA" = "1" ]; then
-        echo "Installing Ollama (official script)..."
-        curl -fsSL https://ollama.com/install.sh | sh
-        command -v ollama >/dev/null 2>&1 || { echo "[ERROR] Ollama install failed"; exit 1; }
-    else
-        echo "[WARN] Ollama is not installed. The service will be installed, but chat needs Ollama. Install it later with:"
-        echo "   curl -fsSL https://ollama.com/install.sh | sh"
-        echo "   (or re-run this installer with --with-ollama:  curl -fsSL <installer URL> | bash -s -- --with-ollama)"
-    fi
+
+TARGET_DIR="$INSTALL_DIR"
+if [ -n "$BUNDLE_DIR" ]; then
+    mkdir -p "$BUNDLE_DIR"; TARGET_DIR="$(cd "$BUNDLE_DIR" && pwd -P)"
 fi
-
-mkdir -p "$INSTALL_DIR"
-{ cat /sys/class/dmi/id/product_uuid 2>/dev/null || { [ -n "$SUDO" ] && $SUDO cat /sys/class/dmi/id/product_uuid 2>/dev/null; }; } > "$INSTALL_DIR/device-id" 2>/dev/null || true
-[ -s "$INSTALL_DIR/device-id" ] || rm -f "$INSTALL_DIR/device-id"
-
-UPDATE_LOG="$INSTALL_DIR/update.log"
-log() { echo "$*"; printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >> "$UPDATE_LOG"; }
-
-verify_sha256() {
-    local file="$1" src="$2" expected="" actual=""
-    if [ "${DB_SKIP_SHA256:-0}" = "1" ]; then log "[WARN] sha256 verification skipped (DB_SKIP_SHA256=1)"; return 0; fi
-    if [ -f "$src" ]; then
-        expected="$(awk '{print $1}' "$src")"
+mkdir -p "$TARGET_DIR"
+SOURCE="$BASE_URL"
+[ "$OFFLINE" -eq 0 ] || SOURCE="$OFFLINE_DIR"
+fetch() {
+    if [ "$OFFLINE" -eq 1 ]; then
+        [ -f "$OFFLINE_DIR/$1" ] || return 1
+        cp -f "$OFFLINE_DIR/$1" "$2"
     else
-        expected="$(curl -fsSL --retry 3 --retry-delay 5 "$src" 2>/dev/null | awk '{print $1}')"
-    fi
-    expected="$(printf '%s' "$expected" | tr 'A-F' 'a-f')"
-    if ! printf '%s' "$expected" | grep -Eq '^[0-9a-f]{64}$'; then
-        log "[WARN] checksum unavailable ($src), continuing without sha256 verification"; return 0
-    fi
-    actual="$(sha256sum "$file" | awk '{print $1}')"
-    if [ "$expected" != "$actual" ]; then
-        rm -f "$file"; log "[ERROR] sha256 mismatch for $(basename "$src" .sha256): expected $expected, got $actual"; exit 1
-    fi
-    log "[OK] sha256 verified: $actual"
-}
-
-install_binary() {
-    chmod +x "$INSTALL_DIR/api.new"
-    mv -f "$INSTALL_DIR/api.new" "$INSTALL_DIR/api"
-    # 退避物 (api.prev / venv.prev 等) が残っていれば片付ける (= 前の版へは版を指定したインストールで戻す)
-    rm -rf "$INSTALL_DIR/api.prev" "$INSTALL_DIR/api.rollback" "$INSTALL_DIR/VERSION.prev" "$INSTALL_DIR/VERSION.rollback" \
-           "$INSTALL_DIR/venv.prev" "$INSTALL_DIR/venv.rollback" "$INSTALL_DIR/venv.new"
-    log "[OK] binary installed"
-    if [ -n "$TARGET_VERSION" ]; then
-        printf '%s\n' "$TARGET_VERSION" > "$INSTALL_DIR/VERSION"
+        curl -fL --connect-timeout 30 --max-time 0 --retry 3 --retry-delay 5 "$BASE_URL/$1" -o "$2"
     fi
 }
-
+if [ -z "$TARGET_VERSION" ]; then
+    MANIFEST="$(mktemp)"
+    if fetch latest.json "$MANIFEST" 2>/dev/null; then
+        TARGET_VERSION="$(sed -n 's/.*"version" *: *"\([^"]*\)".*/\1/p' "$MANIFEST" | head -1)"
+    fi
+    rm -f "$MANIFEST"
+fi
 version_lt() { awk -v a="$1" -v b="$2" 'BEGIN { n = split(a, x, "."); m = split(b, y, "."); k = (n > m) ? n : m
     for (i = 1; i <= k; i++) { p = (i <= n) ? x[i] + 0 : 0; q = (i <= m) ? y[i] + 0 : 0; if (p < q) exit 0; if (p > q) exit 1 } exit 1 }'; }
-INSTALLED_VERSION="$(cat "$INSTALL_DIR/VERSION" 2>/dev/null || true)"
-if [ -n "$TARGET_VERSION" ] && [ -n "$INSTALLED_VERSION" ] && version_lt "$TARGET_VERSION" "$INSTALLED_VERSION"; then
-    log "[WARN] $TARGET_VERSION is older than the installed $INSTALLED_VERSION. Data written by the newer version may become unreadable."
-fi
-WAS_ACTIVE=0
-if [ -z "$DB_NO_SERVICE" ]; then
-    { systemctl is-active --quiet db 2>/dev/null || systemctl is-active --quiet digitalbase 2>/dev/null; } && WAS_ACTIVE=1
-    command -v systemctl &>/dev/null && $SUDO systemctl stop db digitalbase 2>/dev/null || true
-    [ -f "$INSTALL_DIR/stop.sh" ] && "$INSTALL_DIR/stop.sh" 2>/dev/null || true
-fi
-if [ -d "$INSTALL_DIR" ]; then
-    _RP="$(cd "$INSTALL_DIR" && pwd -P)"
-    for p in $(pgrep -fx "./api" 2>/dev/null; pgrep -fx "$_RP/api" 2>/dev/null); do
-        if [ "$(readlink /proc/$p/cwd 2>/dev/null)" = "$_RP" ]; then
-            echo "[ERROR] 稼働中のプロセスを停止できませんでした。先に停止してから再実行してください:"
-            echo "   sudo systemctl stop db   (または $INSTALL_DIR/stop.sh)"
-            exit 1
-        fi
-    done
+if [ -n "$TARGET_VERSION" ] && version_lt "$TARGET_VERSION" "$MIN_SETUP_VERSION"; then
+    echo "[ERROR] $TARGET_VERSION is older than $MIN_SETUP_VERSION and cannot be installed with this installer"; exit 2
 fi
 
-# Download single binary (API + frontend embedded)
-BINARY_URL="$BASE_URL/lmlight-vite-linux-$ARCH"
-log "[UPDATE] start: $BINARY_URL"
-echo "Downloading AI Server..."
-curl -fL --connect-timeout 30 --max-time 0 --retry 3 --retry-delay 5 \
-    "$BINARY_URL" -o "$INSTALL_DIR/api.new" || true
-if [ ! -s "$INSTALL_DIR/api.new" ] || ! head -c 4 "$INSTALL_DIR/api.new" | grep -q $'\x7fELF'; then
-    rm -f "$INSTALL_DIR/api.new"
-    log "[ERROR] Failed to download backend: $BINARY_URL"
-    exit 1
-fi
-verify_sha256 "$INSTALL_DIR/api.new" "$BINARY_URL.sha256"
-install_binary
-
-if ! command -v uv &>/dev/null; then
-    echo "Installing uv (= optional features の前提)..."
-    curl -LsSf https://astral.sh/uv/install.sh | sh >/dev/null 2>&1 \
-        || echo "[WARN] uv install 失敗。後で: curl -LsSf https://astral.sh/uv/install.sh | sh"
-fi
-
-DB_USER="${DB_USER:-digitalbase}"
-DB_PASS="${DB_PASS:-digitalbase}"
-DB_NAME="${DB_NAME:-digitalbase}"
-
-if [ -f "$INSTALL_DIR/.env" ]; then
-    CURRENT_BACKEND=$(grep -E "^LLM_BACKEND=" "$INSTALL_DIR/.env" | tail -1 | cut -d= -f2)
-    if [ -n "$CURRENT_BACKEND" ] && [ "$CURRENT_BACKEND" != "ollama" ]; then
-        echo ""
-        echo "[WARN] .env は LLM_BACKEND=$CURRENT_BACKEND のままです。この edition を使うには:"
-        echo "       $INSTALL_DIR/.env の LLM_BACKEND を ollama に変更して db restart してください"
-        echo ""
-    fi
-fi
-[ ! -f "$INSTALL_DIR/.env" ] && cat > "$INSTALL_DIR/.env" << EOF
-LLM_BACKEND=ollama
-DATABASE_URL=postgresql://${DB_USER}:${DB_PASS}@localhost:5432/${DB_NAME}
-JWT_SECRET=$(openssl rand -hex 32)
-OLLAMA_CONTEXT_LENGTH=16384
-OLLAMA_AUTO_START=true
-LICENSE_FILE_PATH=$INSTALL_DIR/license.lic
-FILES_DIR=$INSTALL_DIR/files
-EOF
-
-# Database setup
-if [ -f "$INSTALL_DIR/.env" ]; then
-    _DB_URL=$(grep -E "^DATABASE_URL=" "$INSTALL_DIR/.env" | head -1 | cut -d= -f2-)
-    if [ -n "$_DB_URL" ]; then
-        export DB_USER=$(echo "$_DB_URL" | sed -n 's|.*://\([^:]*\):.*|\1|p')
-        export DB_PASS=$(echo "$_DB_URL" | sed -n 's|.*://[^:]*:\([^@]*\)@.*|\1|p')
-        export DB_NAME=$(echo "$_DB_URL" | sed -n 's|.*/\([^?]*\).*|\1|p')
-    fi
-fi
-echo "Setting up database..."
-DB_USER="${DB_USER:-digitalbase}"
-DB_PASS="${DB_PASS:-digitalbase}"
-DB_NAME="${DB_NAME:-digitalbase}"
-
-if ! command -v psql &>/dev/null; then
-    echo "[ERROR] PostgreSQL がインストールされていません (pgvector 対応版・16 以降)。README 参照:"
-    echo "   apt install -y postgresql postgresql-\$(ls /usr/lib/postgresql 2>/dev/null | sort -V | tail -1)-pgvector"
-    exit 1
-fi
-if ! pg_isready -q 2>/dev/null; then
-    if command -v pg_ctlcluster &>/dev/null; then
-        PGVER=$(ls /etc/postgresql 2>/dev/null | sort -V | tail -1)
-        [ -n "$PGVER" ] && $SUDO pg_ctlcluster "$PGVER" main start 2>/dev/null || true
-    elif command -v systemctl &>/dev/null; then
-        $SUDO systemctl start postgresql 2>/dev/null || true
-    fi
-fi
-if ! pg_isready -q 2>/dev/null; then
-    echo "[ERROR] PostgreSQL に接続できません (localhost:5432)。手動起動してください:"
-    echo "   pg_ctlcluster <ver> main start   # systemd 無しコンテナ"
-    echo "   systemctl start postgresql       # systemd 環境"
-    exit 1
-fi
-
-if [ "$(PGPASSWORD="$DB_PASS" psql -h localhost -U "$DB_USER" -d "$DB_NAME" -tAc "SELECT 1 FROM pg_extension WHERE extname='vector'" 2>/dev/null)" = "1" ]; then
-    echo "[OK] Database already configured; setup skipped"
+if [ -n "$BUNDLE_DIR" ]; then
+    echo "Creating an offline bundle of DigitalBase ${TARGET_VERSION:-latest} ($ARCH) in $TARGET_DIR"
+    BIN="$TARGET_DIR/$BINARY_NAME"
 else
-    if [ -z "$(pg_admin -tAc "SELECT 1 FROM pg_roles WHERE rolname='$DB_USER'" 2>/dev/null)" ]; then
-        pg_admin -c "CREATE USER $DB_USER WITH PASSWORD '$DB_PASS';" || echo "[WARN] CREATE USER $DB_USER に失敗"
-    fi
-    if [ -z "$(pg_admin -tAc "SELECT 1 FROM pg_database WHERE datname='$DB_NAME'" 2>/dev/null)" ]; then
-        pg_admin -c "CREATE DATABASE $DB_NAME OWNER $DB_USER;" || echo "[WARN] CREATE DATABASE $DB_NAME に失敗"
-    fi
-    pg_admin -c "ALTER USER $DB_USER CREATEDB;" >/dev/null 2>&1 || true
-    if ! pg_admin -d "$DB_NAME" -c "CREATE EXTENSION IF NOT EXISTS vector;" >/dev/null 2>&1; then
-        echo "[WARN] pgvector 拡張の有効化に失敗しました。RAG 機能を使う場合は:"
-        echo "   apt install -y postgresql-\$(psql -V | grep -oE '[0-9]+' | head -1)-pgvector"
-    fi
-    echo "[OK] Database setup complete (schemas and tables are created automatically on first startup)"
+    echo "Installing DigitalBase ${TARGET_VERSION:-latest} ($ARCH) to $INSTALL_DIR from $SOURCE"
+    BIN="$INSTALL_DIR/api.new"
 fi
-
-cat > "$INSTALL_DIR/run.sh" << 'EOF'
-#!/bin/bash
-cd "$(dirname "$0")"
-set -a; [ -f .env ] && source .env; set +a
-
-_ts() { date -u +%Y-%m-%dT%H:%M:%SZ; }
-if [ -f .update-running ] && [ ! -f .update-requested ]; then
-    echo "$(_ts) [UPDATE] previous update was interrupted" >> update.log
-    printf 'result=interrupted\nexit_code=\nfinished_at=%s\n' "$(_ts)" > .update-result
-    rm -f .update-running
+fetch "$BINARY_NAME" "$BIN" || true
+if [ ! -s "$BIN" ] || ! head -c 4 "$BIN" | grep -q $'\x7fELF'; then
+    rm -f "$BIN"
+    echo "[ERROR] Failed to get the binary: $SOURCE/$BINARY_NAME"; exit 1
 fi
-if [ -f .update-requested ]; then
-    UPDATE_URL=$(head -1 .update-requested)
-    PRODUCT_VERSION=$(sed -n 3p .update-requested)
-    rm -f .update-requested
-    touch .update-running
-    DB_INSTALL_DIR="$(pwd -P)"; export DB_INSTALL_DIR
-    if [ -n "$PRODUCT_VERSION" ]; then DB_VERSION="$PRODUCT_VERSION"; export DB_VERSION; fi
-    echo "$(_ts) [UPDATE] running installer: $UPDATE_URL" >> update.log
-    echo "[UPDATE] running installer: $UPDATE_URL"
-    RC=1
-    if curl -fsSL "$UPDATE_URL" -o .update-installer.sh; then
-        if DB_NO_SERVICE=1 bash .update-installer.sh > .update-installer.out 2>&1; then RC=0; else RC=$?; fi
-        if [ "$RC" -ne 0 ]; then
-            echo "[UPDATE] installer failed (rc=$RC, see update.log)"
-            tail -n 40 .update-installer.out >> update.log
-        fi
-    else
-        echo "$(_ts) [UPDATE] installer download failed: $UPDATE_URL" >> update.log
-        echo "[UPDATE] installer download failed: $UPDATE_URL"
-    fi
-    if [ "$RC" -eq 0 ]; then
-        echo "$(_ts) [UPDATE] result: ok" >> update.log
-        printf 'result=ok\nexit_code=0\nfinished_at=%s\n' "$(_ts)" > .update-result
-    else
-        echo "$(_ts) [UPDATE] result: failed (rc=$RC). Run the update again" >> update.log
-        printf 'result=failed\nexit_code=%s\nfinished_at=%s\n' "$RC" "$(_ts)" > .update-result
-    fi
-    rm -f .update-installer.sh .update-running
-fi
-
-if command -v ollama >/dev/null 2>&1; then
-    pgrep -x ollama >/dev/null || { ollama serve &>/dev/null & sleep 2; }
-fi
-
-unset _MEIPASS2 _PYI_ARCHIVE_FILE _PYI_PARENT_PROCESS_LEVEL _PYI_APPLICATION_HOME_DIR
-
-exec ./api
-EOF
-chmod +x "$INSTALL_DIR/run.sh"
-
-cat > "$INSTALL_DIR/start.sh" << 'EOF'
-#!/bin/bash
-cd "$(dirname "$0")"
-set -a; [ -f .env ] && source .env; set +a
-
-if systemctl is-active --quiet db 2>/dev/null; then
-    echo "db.service が稼働中です。操作は: db {start|stop|restart|status|logs}"
-    exit 1
-fi
-
-# Check dependencies
-pg_isready -q 2>/dev/null || { echo "[ERROR] PostgreSQL not running"; exit 1; }
-
-[ -f api.pid ] && kill "$(cat api.pid)" 2>/dev/null
-HERE="$(pwd -P)"
-for p in $(pgrep -fx "./api" 2>/dev/null; pgrep -fx "$HERE/api" 2>/dev/null); do
-    [ "$(readlink /proc/$p/cwd 2>/dev/null)" = "$HERE" ] && kill "$p" 2>/dev/null
-done
-for _ in $(seq 1 30); do
-    ALIVE=0
-    for p in $(pgrep -fx "./api" 2>/dev/null; pgrep -fx "$HERE/api" 2>/dev/null); do
-        [ "$(readlink /proc/$p/cwd 2>/dev/null)" = "$HERE" ] && ALIVE=1
-    done
-    [ "$ALIVE" -eq 0 ] && break
-    sleep 1
-done
-
-echo "Starting AI Server..."
-
-./run.sh &
-API_PID=$!
-echo "$API_PID" > api.pid
-
-echo "[OK] Started - http://localhost:${API_PORT:-8000}"
-
-# Show LAN IP
-LAN_IP=$(ip -4 addr show 2>/dev/null | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | grep -v '127.0.0.1' | head -n1)
-[ -n "$LAN_IP" ] && echo "LAN: http://$LAN_IP:${API_PORT:-8000}"
-
-# Show mDNS hostname if Avahi is running
-if systemctl is-active --quiet avahi-daemon 2>/dev/null; then
-    echo "mDNS: http://$(hostname).local:${API_PORT:-8000}"
-fi
-
-echo ""
-echo "Press Ctrl+C to stop"
-
-trap "kill $API_PID 2>/dev/null; rm -f api.pid; echo 'Stopped'" EXIT
-wait
-EOF
-chmod +x "$INSTALL_DIR/start.sh"
-
-cat > "$INSTALL_DIR/stop.sh" << 'EOF'
-#!/bin/bash
-cd "$(dirname "$0")"
-if systemctl is-active --quiet db 2>/dev/null; then
-    SCTL="systemctl"; [ "$(id -u)" -ne 0 ] && command -v sudo &>/dev/null && SCTL="sudo -n systemctl"
-    $SCTL stop db && { echo "Stopped (systemd)"; exit 0; }
-    echo "Failed to stop db.service (root required): sudo systemctl stop db"; exit 1
-fi
-pkill -f "db/start\.sh" 2>/dev/null
-sleep 1
-[ -f api.pid ] && kill "$(cat api.pid)" 2>/dev/null && rm -f api.pid
-HERE="$(pwd -P)"
-for p in $(pgrep -fx "./api" 2>/dev/null; pgrep -fx "$HERE/api" 2>/dev/null); do
-    [ "$(readlink /proc/$p/cwd 2>/dev/null)" = "$HERE" ] && kill "$p" 2>/dev/null
-done
-echo "Stopped"
-EOF
-chmod +x "$INSTALL_DIR/stop.sh"
-
-SYSTEMD_OK=0
-if [ -z "$DB_NO_SERVICE" ] && [ -d /run/systemd/system ] && command -v systemctl &>/dev/null && { [ "$(id -u)" -eq 0 ] || [ -n "$SUDO" ]; }; then
-    UNIT_TMP=$(mktemp)
-    cat > "$UNIT_TMP" << UNIT
-[Unit]
-Description=DigitalBase AI Server
-After=network-online.target postgresql.service
-Wants=network-online.target
-StartLimitIntervalSec=0
-
-[Service]
-Type=simple
-User=$(id -un)
-WorkingDirectory=$INSTALL_DIR
-ExecStart=$INSTALL_DIR/run.sh
-Restart=always
-RestartSec=5
-TimeoutStopSec=180
-LimitNOFILE=65535
-SyslogIdentifier=db
-
-[Install]
-WantedBy=multi-user.target
-UNIT
-    if $SUDO install -o root -g root -m 644 "$UNIT_TMP" /etc/systemd/system/db.service \
-        && $SUDO systemctl daemon-reload; then
-        rm -f "$UNIT_TMP"
-        $SUDO systemctl enable db >/dev/null 2>&1 || true
-        $SUDO systemctl disable digitalbase >/dev/null 2>&1 || true
-        SYSTEMD_OK=1
-        echo "[OK] systemd unit 登録 (db.service = ブート自動起動 + クラッシュ自動復帰)"
-    else
-        rm -f "$UNIT_TMP"
-        echo "[WARN] systemd unit の登録に失敗しました (従来の start.sh 起動で動作します)"
-    fi
-fi
-
-cat > "$INSTALL_DIR/db" << EOF
-#!/bin/bash
-DB_HOME="\${DB_HOME:-$INSTALL_DIR}"
-EOF
-cat >> "$INSTALL_DIR/db" << 'EOF'
-if [ -f /etc/systemd/system/db.service ] && [ -d /run/systemd/system ]; then
-    SCTL="systemctl"; JCTL="journalctl"
-    [ "$(id -u)" -ne 0 ] && command -v sudo &>/dev/null && { SCTL="sudo systemctl"; JCTL="sudo journalctl"; }
-    RUN=""; [ "$(id -u)" -ne 0 ] && command -v sudo &>/dev/null && RUN="sudo"   # worker / config は service と同じ root で (.env を読む)
-    case "$1" in
-        start)    $SCTL start db ;;
-        stop)     $SCTL stop db ;;
-        restart)  $SCTL restart db ;;
-        worker)   shift; cd "$DB_HOME" && exec $RUN ./api worker "$@" ;;
-        config)   shift; cd "$DB_HOME" && exec $RUN ./api config "$@" ;;
-        version)  cd "$DB_HOME" && exec ./api --version ;;
-        status)   $SCTL status db --no-pager ;;
-        logs)     $JCTL -u db -f ;;
-        *)        echo "Usage: db {start|stop|restart|status|logs|worker [--pool NAME]|config list [--all]|version}"; exit 1 ;;
-    esac
-    exit $?
-fi
-case "$1" in
-    start)    "$DB_HOME/start.sh" ;;
-    stop)     "$DB_HOME/stop.sh" ;;
-    worker)   shift; cd "$DB_HOME" && exec ./api worker "$@" ;;
-    config)   shift; cd "$DB_HOME" && exec ./api config "$@" ;;
-    version)  cd "$DB_HOME" && exec ./api --version ;;
-    *)        echo "Usage: db {start|stop|worker [--pool NAME]|config list [--all]|version}"; exit 1 ;;
-esac
-EOF
-chmod +x "$INSTALL_DIR/db"
-
-if [ "$(readlink /usr/local/bin/db 2>/dev/null)" = "$INSTALL_DIR/db" ]; then
-    :
-elif [ -z "$SUDO" ] && [ "$(id -u)" -ne 0 ]; then
-    echo "[WARN] Run: sudo ln -sf $INSTALL_DIR/db /usr/local/bin/db"
+if [ "${DB_SKIP_SHA256:-0}" = "1" ]; then
+    echo "[WARN] sha256 verification skipped (DB_SKIP_SHA256=1)"
 else
-    $SUDO ln -sf "$INSTALL_DIR/db" /usr/local/bin/db 2>/dev/null || echo "[WARN] Run: ln -sf $INSTALL_DIR/db /usr/local/bin/db"
+    SUM="$(mktemp)"
+    EXPECTED=""
+    fetch "$BINARY_NAME.sha256" "$SUM" 2>/dev/null && EXPECTED="$(awk '{print $1}' "$SUM" | tr 'A-F' 'a-f')"
+    rm -f "$SUM"
+    if printf '%s' "$EXPECTED" | grep -Eq '^[0-9a-f]{64}$'; then
+        ACTUAL="$(sha256sum "$BIN" | awk '{print $1}')"
+        [ "$EXPECTED" = "$ACTUAL" ] || { rm -f "$BIN"; echo "[ERROR] sha256 mismatch: expected $EXPECTED, got $ACTUAL"; exit 1; }
+        echo "[OK] sha256 verified: $ACTUAL"
+    else
+        echo "[WARN] checksum unavailable ($SOURCE/$BINARY_NAME.sha256), continuing without sha256 verification"
+    fi
 fi
+if [ -n "$BUNDLE_DIR" ]; then
+    [ -z "$EXPECTED" ] || printf '%s  %s\n' "$EXPECTED" "$BINARY_NAME" > "$TARGET_DIR/$BINARY_NAME.sha256"
+    fetch latest.json "$TARGET_DIR/latest.json" 2>/dev/null || true
+    curl -fsSL "${SCRIPTS_URL%/}/install-linux.sh" -o "$TARGET_DIR/install-linux.sh" || { echo "[ERROR] Could not download install-linux.sh"; exit 1; }
+    RUN_DIR="$(mktemp -d)"
+    cp "$BIN" "$RUN_DIR/api" && chmod +x "$RUN_DIR/api"
+    exec "$RUN_DIR/api" setup --bundle "$TARGET_DIR" --product-version "$TARGET_VERSION" "${PASS[@]}"
+fi
+chmod +x "$INSTALL_DIR/api.new"
 
-echo ""
-if [ "$SYSTEMD_OK" -eq 1 ] && [ "${WAS_ACTIVE:-0}" -eq 1 ]; then
-    $SUDO systemctl start db 2>/dev/null && echo "[OK] 更新完了、db.service を再開しました" || true
-fi
-echo "Done. Edit $INSTALL_DIR/.env then run: db start"
-[ "$SYSTEMD_OK" -eq 1 ] && echo "     (systemd 管理: ブート時自動起動。ログは db logs / journalctl -u db)" || true
+SETUP=(setup --binary "$INSTALL_DIR/api.new" --product-version "$TARGET_VERSION")
+[ "$OFFLINE" -eq 0 ] || SETUP+=(--offline "$OFFLINE_DIR")
+export DB_INSTALL_DIR="$INSTALL_DIR"
+cd "$INSTALL_DIR"
+exec "$INSTALL_DIR/api.new" "${SETUP[@]}" "${PASS[@]}"

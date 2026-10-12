@@ -1,6 +1,6 @@
 # DigitalBase — docker compose
 #
-#   curl -fsSL https://pub-a2cab4360f1748cab5ae1c0f12cddc0a.r2.dev/vite-scripts/install-docker.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/lmlight-app/staging-vite/main/scripts/install-docker.sh | bash
 #   → http://localhost:8000  (admin@local / admin123。初回ログイン後にパスワードを変える)
 #
 # 設定は同じ dir の .env (雛形: docker.env.example)。.env の全行がアプリに渡る。

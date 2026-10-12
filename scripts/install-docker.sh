@@ -1,7 +1,7 @@
 #!/bin/bash
 # DigitalBase Docker installer
 #
-#   curl -fsSL https://pub-a2cab4360f1748cab5ae1c0f12cddc0a.r2.dev/vite-scripts/install-docker.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/lmlight-app/staging-vite/main/scripts/install-docker.sh | bash
 #   curl -fsSL .../install-docker.sh | bash -s -- --platform cuda        # vLLM も同じ stack で (NVIDIA)。AMD は rocm、Intel は xpu
 #   curl -fsSL .../install-docker.sh | bash -s -- --version 26.1010.3     # 版を固定
 #   curl -fsSL .../install-docker.sh | bash -s -- --port 8080
@@ -10,7 +10,7 @@
 set -euo pipefail
 
 INSTALL_DIR="${DB_INSTALL_DIR:-$HOME/digitalbase}"
-BASE_URL="${DB_SCRIPTS_URL:-https://pub-a2cab4360f1748cab5ae1c0f12cddc0a.r2.dev/vite-scripts}"
+BASE_URL="${DB_SCRIPTS_URL:-https://raw.githubusercontent.com/lmlight-app/staging-vite/main/scripts/}"
 PLATFORM="${DB_PLATFORM:-}"
 VERSION="${DB_VERSION:-}"
 PORT_ARG="${APP_PORT:-}"
@@ -54,7 +54,7 @@ fi
 mkdir -p "$INSTALL_DIR/data" "$INSTALL_DIR/postgres-data"
 cd "$INSTALL_DIR"
 for f in docker-compose.yml docker.env.example; do
-    curl -fsSL "$BASE_URL/$f" -o "$f.tmp" || { rm -f "$f.tmp"; echo "[ERROR] Could not download $f ($BASE_URL)"; exit 1; }
+    curl -fsSL "${BASE_URL%/}/$f" -o "$f.tmp" || { rm -f "$f.tmp"; echo "[ERROR] Could not download $f ($BASE_URL)"; exit 1; }
     mv "$f.tmp" "$f"
 done
 rm -f docker-compose.vllm.yml docker-compose.vllm-rocm.yml docker-compose.vllm-xpu.yml
