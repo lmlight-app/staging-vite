@@ -27,7 +27,7 @@ usage() {
 Usage: install-linux-sglang.sh [--sglang-version X.Y.Z] [--uv-version X.Y.Z] [--torch-index URL] [--offline --wheelhouse DIR] [--version VERSION]
   --sglang-version  SGLang: latest | nightly | X.Y.Z   (default: the version recorded in this host's venv, else latest; env DB_SGLANG_VERSION)
   --uv-version    uv: latest | X.Y.Z             (default: latest; env DB_UV_VERSION)
-  --torch-index   PyTorch wheel index URL (default: empty = uv --torch-backend=auto; env DB_TORCH_INDEX)
+  --torch-index   PyTorch wheel index URL, or auto = uv --torch-backend=auto (default: the index recorded in this host's venv, else auto; env DB_TORCH_INDEX)
   --version       DigitalBase version to install: latest | YY.MMDD[.N] | xYYYYMMDD[.N][-linux] (default: latest; env DB_VERSION)
   --offline       no network: binary / checksum / uv / wheels are taken from --wheelhouse DIR
   --wheelhouse    directory with the pre-staged files (env DB_WHEELHOUSE). See "Offline install" in README
@@ -168,6 +168,8 @@ fi
 manifest_get() { sed -n "s/.*\"$1\" *: *\"\([^\"]*\)\".*/\1/p" "$MANIFEST_FILE" 2>/dev/null | head -1; }
 # 推論エンジンの版: 指定 (--sglang-version / 管理画面の「版を変更」) > この機械の venv に記録した版 > latest
 [ -n "$SGLANG_VERSION" ] || SGLANG_VERSION="$(recorded engine-spec)"
+[ -n "$TORCH_INDEX" ] || TORCH_INDEX="$(recorded torch-index)"
+[ "$TORCH_INDEX" != "auto" ] || TORCH_INDEX=""
 SGLANG_VERSION="${SGLANG_VERSION:-latest}"
 UV_VERSION="${UV_VERSION:-latest}"
 log "[UPDATE] target: app $(manifest_get version), SGLang $SGLANG_VERSION, uv $UV_VERSION, torch index ${TORCH_INDEX:-auto}"
@@ -289,6 +291,7 @@ if ! uv venv "${VENV_ARGS[@]}" "$VENV"; then
 fi
 echo "sglang" > "$VENV/.db-edition"
 echo "$SGLANG_VERSION" > "$VENV/.db-engine-spec"
+echo "${TORCH_INDEX:-auto}" > "$VENV/.db-torch-index"
 
 PIP_ARGS=(--python "$VENV/bin/python")
 [ "$OFFLINE" -eq 1 ] && PIP_ARGS+=(--no-index --find-links "$WHEELHOUSE")

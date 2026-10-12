@@ -29,7 +29,7 @@ Usage: install-linux-vllm.sh [--platform cuda|rocm|xpu] [--vllm-version X.Y.Z] [
   --platform      GPU: cuda (NVIDIA) | rocm (AMD) | xpu (Intel)   (default: the platform recorded in this host's venv, else cuda; env DB_PLATFORM)
   --vllm-version  vLLM: latest | nightly | X.Y.Z   (default: the version recorded in this host's venv, else latest; env DB_VLLM_VERSION)
   --uv-version    uv: latest | X.Y.Z             (default: latest; env DB_UV_VERSION)
-  --torch-index   PyTorch wheel index URL (default: empty = uv --torch-backend=auto; env DB_TORCH_INDEX)
+  --torch-index   PyTorch wheel index URL, or auto = uv --torch-backend=auto (default: the index recorded in this host's venv, else auto; env DB_TORCH_INDEX)
   --version       DigitalBase version to install: latest | YY.MMDD[.N] | xYYYYMMDD[.N][-linux] (default: latest; env DB_VERSION)
   --offline       no network: binary / checksum / uv / wheels are taken from --wheelhouse DIR
   --wheelhouse    directory with the pre-staged files (env DB_WHEELHOUSE). See "Offline install" in README
@@ -176,6 +176,8 @@ fi
 manifest_get() { sed -n "s/.*\"$1\" *: *\"\([^\"]*\)\".*/\1/p" "$MANIFEST_FILE" 2>/dev/null | head -1; }
 # 推論エンジンの版: 指定 (--vllm-version / 管理画面の「版を変更」) > この機械の venv に記録した版 > latest
 [ -n "$VLLM_VERSION" ] || VLLM_VERSION="$(recorded engine-spec)"
+[ -n "$TORCH_INDEX" ] || TORCH_INDEX="$(recorded torch-index)"
+[ "$TORCH_INDEX" != "auto" ] || TORCH_INDEX=""
 VLLM_VERSION="${VLLM_VERSION:-latest}"
 UV_VERSION="${UV_VERSION:-latest}"
 log "[UPDATE] target: app $(manifest_get version), vLLM $VLLM_VERSION, uv $UV_VERSION, platform $PLATFORM, torch index ${TORCH_INDEX:-auto}"
@@ -297,6 +299,7 @@ if ! uv venv "${VENV_ARGS[@]}" "$VENV"; then
 fi
 echo "vllm" > "$VENV/.db-edition"
 echo "$VLLM_VERSION" > "$VENV/.db-engine-spec"
+echo "${TORCH_INDEX:-auto}" > "$VENV/.db-torch-index"
 echo "$PLATFORM" > "$VENV/.db-platform"
 
 PIP_ARGS=(--python "$VENV/bin/python")
