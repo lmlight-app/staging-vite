@@ -51,7 +51,8 @@ if [ "$(printf '%s\n' "2.24.0" "$COMPOSE_VER" | sort -V | head -1)" != "2.24.0" 
     echo "[ERROR] docker compose $COMPOSE_VER is too old (2.24 or later is required)"; exit 1
 fi
 
-mkdir -p "$INSTALL_DIR/data" "$INSTALL_DIR/postgres-data"
+NEW_DIR=0; [ -d "$INSTALL_DIR" ] || NEW_DIR=1
+mkdir -p "$INSTALL_DIR"
 cd "$INSTALL_DIR"
 PROJECT="$([ ! -f .env ] || awk -F= '$1 == "COMPOSE_PROJECT_NAME" { v = $2 } END { print v }' .env)"
 PROJECT="${PROJECT:-digitalbase}"
@@ -60,8 +61,10 @@ if [ -n "$OTHER" ]; then
     echo "[ERROR] The DigitalBase stack in $OTHER already uses the name '$PROJECT'. Nothing was changed."
     echo "        To update it: DB_INSTALL_DIR=$OTHER bash install-docker.sh"
     echo "        To run a second stack: set COMPOSE_PROJECT_NAME=<other name> and APP_PORT in $INSTALL_DIR/.env, then run this again"
+    [ "$NEW_DIR" -eq 0 ] || { cd /; rmdir "$INSTALL_DIR" 2>/dev/null || true; }
     exit 1
 fi
+mkdir -p data postgres-data
 for f in docker-compose.yml docker.env.example; do
     curl -fsSL "${BASE_URL%/}/$f" -o "$f.tmp" || { rm -f "$f.tmp"; echo "[ERROR] Could not download $f ($BASE_URL)"; exit 1; }
     mv "$f.tmp" "$f"
