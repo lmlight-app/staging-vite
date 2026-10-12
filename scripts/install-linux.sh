@@ -105,7 +105,7 @@ if [ -n "$BUNDLE_DIR" ]; then
     BIN="$TARGET_DIR/$BINARY_NAME"
 else
     echo "Installing DigitalBase ${TARGET_VERSION:-latest} ($ARCH) to $INSTALL_DIR from $SOURCE"
-    BIN="$INSTALL_DIR/api.new"
+    BIN="$INSTALL_DIR/api.new.$$"
 fi
 fetch "$BINARY_NAME" "$BIN" || true
 if [ ! -s "$BIN" ] || ! head -c 4 "$BIN" | grep -q $'\x7fELF'; then
@@ -135,10 +135,10 @@ if [ -n "$BUNDLE_DIR" ]; then
     cp "$BIN" "$RUN_DIR/api" && chmod +x "$RUN_DIR/api"
     exec "$RUN_DIR/api" setup --bundle "$TARGET_DIR" --product-version "$TARGET_VERSION" "${PASS[@]}"
 fi
-chmod +x "$INSTALL_DIR/api.new"
+chmod +x "$BIN"
 
-SETUP=(setup --binary "$INSTALL_DIR/api.new" --product-version "$TARGET_VERSION")
+SETUP=(setup --binary "$BIN" --product-version "$TARGET_VERSION")
 [ "$OFFLINE" -eq 0 ] || SETUP+=(--offline "$OFFLINE_DIR")
 export DB_INSTALL_DIR="$INSTALL_DIR"
 cd "$INSTALL_DIR"
-exec "$INSTALL_DIR/api.new" "${SETUP[@]}" "${PASS[@]}"
+exec "$BIN" "${SETUP[@]}" "${PASS[@]}"

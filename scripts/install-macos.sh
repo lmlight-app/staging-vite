@@ -67,7 +67,7 @@ verify_sha256() {
 install_binary() {
     chmod +x "$INSTALL_DIR/api.new"
     mv -f "$INSTALL_DIR/api.new" "$INSTALL_DIR/api"
-    # 退避物 (api.prev / venv.prev 等) が残っていれば片付ける (= 前の版へは版を指定したインストールで戻す)
+    # 退避物 (api.prev / venv.prev 等) が残っていれば片付ける (= 前のバージョンへはバージョンを指定したインストールで戻す)
     rm -rf "$INSTALL_DIR/api.prev" "$INSTALL_DIR/api.rollback" "$INSTALL_DIR/VERSION.prev" "$INSTALL_DIR/VERSION.rollback" \
            "$INSTALL_DIR/venv.prev" "$INSTALL_DIR/venv.rollback" "$INSTALL_DIR/venv.new"
     log "[OK] binary installed"

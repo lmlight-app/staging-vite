@@ -37,8 +37,8 @@ show_usage() {
   --gpu N               使う GPU 番号 (CUDA_VISIBLE_DEVICES=N)。省略時はチャットと同じ GPU 0 を共有
                         (起動オプションは、指定した GPU は搭載メモリ、共有の GPU 0 は空きメモリで決める)
   --port P              待ち受けポート (127.0.0.1 のみ)
-  --version X.Y.Z       vllm / vllm-omni の版。既定は本体 venv の vllm と同じ版
-  --omni-version X.Y.Z  vllm-omni の版だけを別に指定する (既定は --version と同じ)
+  --version X.Y.Z       vllm / vllm-omni のバージョン。既定は本体 venv の vllm と同じバージョン
+  --omni-version X.Y.Z  vllm-omni のバージョンだけを別に指定する (既定は --version と同じ)
   --remove image|video  unit を停止・削除し、.env から *_GEN_BASE_URL を消す
   --dry-run             unit / sudoers / .env の変更内容を表示するだけで何もしない (macOS でも実行可)
 
@@ -324,21 +324,21 @@ if [ "$DRY_RUN" -eq 0 ] && [ ! -d "$INSTALL_DIR" ]; then
     exit 1
 fi
 
-# ── vllm / vllm-omni の版 (vllm-omni は vllm と major.minor を揃える必要がある) ──
+# ── vllm / vllm-omni のバージョン (vllm-omni は vllm と major.minor を揃える必要がある) ──
 if [ -z "$VERSION" ]; then
     if [ -x "$VENV/bin/python" ]; then
         VERSION="$("$VENV/bin/python" -c 'from importlib.metadata import version; print(version("vllm"))' 2>/dev/null || true)"
         VERSION="${VERSION%%+*}"
     fi
     if [ -z "$VERSION" ]; then
-        echo "[ERROR] 本体の venv ($VENV) に vllm が見つかりません。--version X.Y.Z で vllm / vllm-omni の版を指定してください。"
+        echo "[ERROR] 本体の venv ($VENV) に vllm が見つかりません。--version X.Y.Z で vllm / vllm-omni のバージョンを指定してください。"
         exit 1
     fi
     case "$VERSION" in
         *dev*|*rc*)
-            echo "[WARN] 本体の vllm は $VERSION (開発版) です。同じ版の vllm-omni が無い場合は --version X.Y.Z で指定してください。" ;;
+            echo "[WARN] 本体の vllm は $VERSION (開発版) です。同じバージョンの vllm-omni が無い場合は --version X.Y.Z で指定してください。" ;;
     esac
-    echo "[OK] vllm の版: $VERSION (本体 venv と同じ)"
+    echo "[OK] vllm のバージョン: $VERSION (本体 venv と同じ)"
 fi
 OMNI_VERSION="${OMNI_VERSION:-$VERSION}"
 
@@ -365,7 +365,7 @@ UV_CACHE="$INSTALL_DIR/.cache/media-uv"
 HF_TOKEN="${HF_TOKEN:-$(env_get HF_TOKEN || true)}"
 [ -z "$HF_TOKEN" ] || export HF_TOKEN
 
-# 版を == で固定しても uvx は毎回 index に問い合わせる (ネットが無いと起動できない) ので、unit は --offline で
+# バージョンを == で固定しても uvx は毎回 index に問い合わせる (ネットが無いと起動できない) ので、unit は --offline で
 # 起動し、環境はこのインストーラーが同じ引数で先に作っておく (下の「事前準備」)
 UVX_ARGS=(--python 3.12 --from "vllm-omni==$OMNI_VERSION" --with "vllm==$VERSION")
 
@@ -454,7 +454,7 @@ echo "vLLM-Omni の実行環境を準備中 (vllm-omni==$OMNI_VERSION + vllm==$V
 if ! as_db_user UV_CACHE_DIR="$UV_CACHE" "$UVX" "${UVX_ARGS[@]}" vllm-omni --help >/dev/null; then
     echo "[ERROR] vLLM-Omni の実行環境を作れませんでした。"
     echo "   vllm-omni==$OMNI_VERSION / vllm==$VERSION の組み合わせが PyPI にあるか確認し、"
-    echo "   必要なら --version / --omni-version で版を指定してください (vllm-omni は vllm と major.minor を揃える)。"
+    echo "   必要なら --version / --omni-version でバージョンを指定してください (vllm-omni は vllm と major.minor を揃える)。"
     exit 1
 fi
 if ! as_db_user UV_CACHE_DIR="$UV_CACHE" "$UVX" --offline "${UVX_ARGS[@]}" vllm-omni --help >/dev/null; then

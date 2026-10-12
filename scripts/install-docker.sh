@@ -3,7 +3,7 @@
 #
 #   curl -fsSL https://raw.githubusercontent.com/lmlight-app/staging-vite/main/scripts/install-docker.sh | bash
 #   curl -fsSL .../install-docker.sh | bash -s -- --platform cuda        # vLLM も同じ stack で (NVIDIA)。AMD は rocm、Intel は xpu
-#   curl -fsSL .../install-docker.sh | bash -s -- --version 26.1010.3     # 版を固定
+#   curl -fsSL .../install-docker.sh | bash -s -- --version 26.1010.3     # バージョンを固定
 #   curl -fsSL .../install-docker.sh | bash -s -- --port 8080
 #
 # 再実行 = 更新 (compose ファイルを最新にして pull → up。.env と data/ postgres-data/ hf-cache/ はそのまま)。
