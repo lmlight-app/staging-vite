@@ -12,6 +12,11 @@ fi
 
 echo "Promoting staging-vite → dist_vite"
 
+for f in "$DIST_DIR/scripts/"*; do
+  [ -f "$f" ] || continue
+  [ -e "$STAGING_DIR/scripts/$(basename "$f")" ] || echo "[WARN] dist_vite/scripts/$(basename "$f") has no copy in staging-vite (staging-vite is the source; bring it over)"
+done
+
 # Top-level scripts (sh / ps1).
 # `cp scripts/*` only copies direct children, so the installer/
 # subdir is handled separately below.
