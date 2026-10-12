@@ -80,6 +80,7 @@ if [ -z "$PLATFORM" ]; then
     case "$(recorded platform)" in rocm) PLATFORM=rocm ;; xpu) PLATFORM=xpu ;; *) PLATFORM=cuda ;; esac
 fi
 case "$PLATFORM" in cuda|rocm|xpu) ;; *) echo "[ERROR] --platform must be cuda, rocm or xpu (got: $PLATFORM)"; exit 2 ;; esac
+case "$PLATFORM:$ARCH" in rocm:arm64|xpu:arm64) echo "[ERROR] the $PLATFORM build of vLLM is x86_64 only"; exit 2 ;; esac
 
 offline_manifest() {
     cat << EOF
@@ -306,6 +307,7 @@ pypi_latest_vllm() {
     curl -fsSL --retry 3 --retry-delay 5 https://pypi.org/pypi/vllm/json 2>/dev/null \
         | "$VENV/bin/python" -c "import json, sys; print(json.load(sys.stdin)['info']['version'])" 2>/dev/null || true
 }
+has_nvidia_gpu() { command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi -L 2>/dev/null | grep -q '^GPU '; }
 engine_sources() {
     SOURCES=()
     [ "$OFFLINE" -eq 1 ] && return 0
@@ -323,7 +325,9 @@ engine_sources() {
                       torch="${torch:-https://download.pytorch.org/whl/xpu}" ;;
     esac
     if [ "$PLATFORM" = "cuda" ]; then
-        if [ -n "$torch" ]; then SOURCES+=(--extra-index-url "$torch"); else SOURCES+=(--torch-backend=auto); fi
+        if [ -n "$torch" ]; then SOURCES+=(--extra-index-url "$torch")
+        elif has_nvidia_gpu; then SOURCES+=(--torch-backend=auto)
+        else log "[WARN] no NVIDIA GPU found (nvidia-smi): installing the default CUDA build of torch"; fi
         [ -n "$index" ] && SOURCES+=(--extra-index-url "$index")
     else
         SOURCES+=(--extra-index-url "$index")
@@ -379,6 +383,8 @@ esac
 if [ "$PLATFORM" != "cuda" ]; then
     case "$VLLM_INSTALLED" in *"$PLATFORM"*) ;; *) venv_fail "vLLM $VLLM_INSTALLED is not a $PLATFORM build" ;; esac
 fi
+TORCH_BUILD="$("$VENV/bin/python" -c "import torch; v = torch.version; print('cuda' if v.cuda else 'rocm' if getattr(v, 'hip', None) else 'xpu' if '+xpu' in torch.__version__ else 'cpu', torch.__version__)" 2>/dev/null || true)"
+[ "${TORCH_BUILD%% *}" = "$PLATFORM" ] || venv_fail "torch ${TORCH_BUILD#* } is a ${TORCH_BUILD%% *} build, not $PLATFORM"
 log "[OK] vLLM $VLLM_INSTALLED"
 
 if [ "$OFFLINE" -eq 0 ]; then

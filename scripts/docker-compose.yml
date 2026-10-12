@@ -1,25 +1,75 @@
-# DigitalBase — docker compose (= Docker 配備の正本。これ 1 ファイルで PostgreSQL (pgvector) + アプリが上がる)
+# DigitalBase — docker compose
 #
-#   mkdir digitalbase && cd digitalbase
-#   curl -fsSL https://raw.githubusercontent.com/lmlight-app/staging-vite/main/scripts/docker-compose.yml -o docker-compose.yml
-#   docker compose up -d
+#   curl -fsSL https://pub-a2cab4360f1748cab5ae1c0f12cddc0a.r2.dev/vite-scripts/install-docker.sh | bash
 #   → http://localhost:8000  (admin@local / admin123。初回ログイン後にパスワードを変える)
 #
-# 設定は同じ dir の .env に書く (無くても動く)。雛形:
-#   curl -fsSL https://pub-a2cab4360f1748cab5ae1c0f12cddc0a.r2.dev/vite-scripts/docker.env.example -o .env
-#   APP_PORT / LLM_BACKEND (ollama | vllm) / DB_IMAGE_TAG / DB_PASSWORD のほか、
-#   OPENAI_API_KEY や AUTH_MODE など .env の全行がそのままアプリに渡る。
-# 既存の PostgreSQL / LLM を使う: DATABASE_URL / OLLAMA_BASE_URL / VLLM_BASE_URL / VLLM_EMBED_BASE_URL を .env に書く
-#   (db サービスは消してよい)。既定はホスト側の Ollama (11434) / vLLM (8080, 8081) に繋ぐ。
-# GPU のホストで vLLM も一緒に上げる:  docker compose -f docker-compose.yml -f docker-compose.vllm.yml up -d
-#
-# データ: data/ (ファイル・license.lic・自動生成する鍵)、postgres-data/ (DB)。バックアップはこの dir ごと。
-# ライセンス: data/license.lic に置く (無ければ起動後に 管理画面 > ライセンス から upload)。
-# 更新: docker compose pull && docker compose up -d     停止: docker compose down (データは残る)
-# 削除: docker compose down && sudo rm -rf data postgres-data   (container は root で動くので中のファイルは root 所有)
-# 本番は DB_IMAGE_TAG で版を固定する (latest は更新のたびに動く)。要 Docker Compose v2.24 以降。
+# 設定は同じ dir の .env (雛形: docker.env.example)。.env の全行がアプリに渡る。
+# vLLM を同じ stack で動かす: .env の COMPOSE_PROFILES に cuda (NVIDIA) / rocm (AMD) / xpu (Intel) のどれか 1 つ。
+# データ: data/ (ファイル・license.lic・鍵)、postgres-data/ (DB)、hf-cache/ (vLLM のモデル)。この dir ごとバックアップする。
+# 更新: install-docker.sh を再実行 (または docker compose pull && docker compose up -d --remove-orphans)。要 Docker Compose v2.24 以降。
 
 name: digitalbase
+
+x-vllm: &vllm
+  restart: unless-stopped
+  ipc: host
+  environment:
+    HF_TOKEN: ${HF_TOKEN:-}
+  volumes:
+    - ${HF_CACHE_DIR:-./hf-cache}:/root/.cache/huggingface
+  healthcheck:
+    test: ["CMD", "python3", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health', timeout=3).status==200 else 1)"]
+    interval: 15s
+    timeout: 5s
+    retries: 80
+    start_period: 120s
+
+x-vllm-chat-command: &vllm_chat_command
+  - --model=${VLLM_CHAT_MODEL:-Qwen/Qwen3-1.7B}
+  - --max-model-len=${LLM_CONTEXT_LENGTH:-32768}
+  - --gpu-memory-utilization=${VLLM_GPU_MEMORY_UTILIZATION_CHAT:-0.70}
+  - --enable-auto-tool-choice
+  - --tool-call-parser=${VLLM_TOOL_CALL_PARSER:-hermes}
+  - --reasoning-parser=${VLLM_REASONING_PARSER:-qwen3}
+
+x-vllm-embed-command: &vllm_embed_command
+  - --model=${VLLM_EMBED_MODEL:-Qwen/Qwen3-Embedding-0.6B}
+  - --runner=pooling
+  - --gpu-memory-utilization=${VLLM_GPU_MEMORY_UTILIZATION_EMBED:-0.10}
+
+x-cuda: &cuda
+  image: vllm/vllm-openai:${VLLM_IMAGE_TAG:-latest}
+  profiles: [cuda]
+  deploy:
+    resources:
+      reservations:
+        devices:
+          - driver: nvidia
+            count: all
+            capabilities: [gpu]
+
+x-rocm: &rocm
+  image: vllm/vllm-openai-rocm:${VLLM_IMAGE_TAG:-latest}
+  profiles: [rocm]
+  devices:
+    - /dev/kfd
+    - /dev/dri
+  group_add:
+    - video
+  cap_add:
+    - SYS_PTRACE
+  security_opt:
+    - seccomp=unconfined
+
+x-xpu: &xpu
+  image: vllm/vllm-openai-xpu:${VLLM_IMAGE_TAG:-latest}
+  profiles: [xpu]
+  devices:
+    - /dev/dri:/dev/dri
+  privileged: true
+  volumes:
+    - ${HF_CACHE_DIR:-./hf-cache}:/root/.cache/huggingface
+    - /dev/dri/by-path:/dev/dri/by-path
 
 services:
   db:
@@ -45,18 +95,43 @@ services:
         condition: service_healthy
     ports:
       - "${APP_PORT:-8000}:8000"
-    # .env の全行をアプリに渡す (下の environment が優先 = compose 内の配線は .env で壊れない)
     env_file:
       - path: .env
         required: false
     environment:
       LLM_BACKEND: ${LLM_BACKEND:-ollama}
-      # pgvector 拡張とスキーマはアプリが起動時に作る (この user は container 内の superuser)
       DATABASE_URL: ${DATABASE_URL:-postgresql://digitalbase:${DB_PASSWORD:-digitalbase}@db:5432/digitalbase}
       OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
       VLLM_BASE_URL: ${VLLM_BASE_URL:-http://host.docker.internal:8080}
       VLLM_EMBED_BASE_URL: ${VLLM_EMBED_BASE_URL:-http://host.docker.internal:8081}
     extra_hosts:
-      - "host.docker.internal:host-gateway"   # ホストの Ollama / vLLM に container から届くように
+      - "host.docker.internal:host-gateway"
     volumes:
       - ./data:/app/data
+
+  vllm-chat-cuda:
+    <<: [*vllm, *cuda]
+    command: *vllm_chat_command
+    networks: {default: {aliases: [vllm-chat]}}
+  vllm-embed-cuda:
+    <<: [*vllm, *cuda]
+    command: *vllm_embed_command
+    networks: {default: {aliases: [vllm-embed]}}
+
+  vllm-chat-rocm:
+    <<: [*vllm, *rocm]
+    command: *vllm_chat_command
+    networks: {default: {aliases: [vllm-chat]}}
+  vllm-embed-rocm:
+    <<: [*vllm, *rocm]
+    command: *vllm_embed_command
+    networks: {default: {aliases: [vllm-embed]}}
+
+  vllm-chat-xpu:
+    <<: [*xpu, *vllm]
+    command: *vllm_chat_command
+    networks: {default: {aliases: [vllm-chat]}}
+  vllm-embed-xpu:
+    <<: [*xpu, *vllm]
+    command: *vllm_embed_command
+    networks: {default: {aliases: [vllm-embed]}}

@@ -293,10 +293,13 @@ echo "$SGLANG_VERSION" > "$VENV/.db-engine-spec"
 PIP_ARGS=(--python "$VENV/bin/python")
 [ "$OFFLINE" -eq 1 ] && PIP_ARGS+=(--no-index --find-links "$WHEELHOUSE")
 venv_fail() { log "[ERROR] $1 (run the installer again to retry)"; rm -f "$INSTALL_DIR/api.new"; exit 1; }
+has_nvidia_gpu() { command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi -L 2>/dev/null | grep -q '^GPU '; }
 engine_sources() {
     SOURCES=()
     [ "$OFFLINE" -eq 1 ] && return 0
-    if [ -n "$TORCH_INDEX" ]; then SOURCES+=(--extra-index-url "$TORCH_INDEX"); else SOURCES+=(--torch-backend=auto); fi
+    if [ -n "$TORCH_INDEX" ]; then SOURCES+=(--extra-index-url "$TORCH_INDEX")
+    elif has_nvidia_gpu; then SOURCES+=(--torch-backend=auto)
+    else log "[WARN] no NVIDIA GPU found (nvidia-smi): installing the default CUDA build of torch"; fi
     return 0
 }
 [ "$SGLANG_VERSION" = "nightly" ] && { log "[WARN] SGLang has no nightly channel; installing latest instead"; SGLANG_VERSION=latest; }
@@ -320,6 +323,8 @@ case "$SGLANG_VERSION" in
     latest|nightly) ;;
     *) [ "$SGLANG_INSTALLED" = "$SGLANG_VERSION" ] || [ "${SGLANG_INSTALLED%%+*}" = "$SGLANG_VERSION" ] || venv_fail "SGLang $SGLANG_INSTALLED is installed, expected $SGLANG_VERSION" ;;
 esac
+TORCH_BUILD="$("$VENV/bin/python" -c "import torch; v = torch.version; print('cuda' if v.cuda else 'rocm' if getattr(v, 'hip', None) else 'xpu' if '+xpu' in torch.__version__ else 'cpu', torch.__version__)" 2>/dev/null || true)"
+[ "${TORCH_BUILD%% *}" = "cuda" ] || venv_fail "torch ${TORCH_BUILD#* } is a ${TORCH_BUILD%% *} build, not cuda"
 log "[OK] SGLang $SGLANG_INSTALLED"
 
 if [ "$OFFLINE" -eq 0 ]; then

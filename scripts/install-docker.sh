@@ -1,108 +1,136 @@
 #!/bin/bash
-# DigitalBase Docker installer (= docker compose の薄い wrapper。構成の正本は docker-compose.yml)
+# DigitalBase Docker installer
 #
 #   curl -fsSL https://pub-a2cab4360f1748cab5ae1c0f12cddc0a.r2.dev/vite-scripts/install-docker.sh | bash
-#   curl -fsSL .../install-docker.sh | GPU=1 bash           # vLLM も container で同梱 (NVIDIA GPU)
-#   curl -fsSL .../install-docker.sh | GPU=rocm bash        # 同 (AMD GPU)。Intel GPU は GPU=xpu
-#   curl -fsSL .../install-docker.sh | APP_PORT=8080 bash   # 初回だけ .env に書く
+#   curl -fsSL .../install-docker.sh | bash -s -- --platform cuda        # vLLM も同じ stack で (NVIDIA)。AMD は rocm、Intel は xpu
+#   curl -fsSL .../install-docker.sh | bash -s -- --version 26.1010.3     # 版を固定
+#   curl -fsSL .../install-docker.sh | bash -s -- --port 8080
 #
-# やること: Docker と compose の確認 → compose ファイルを INSTALL_DIR に置く → .env が無ければ雛形から作る → pull → up。
-# 再実行 = 更新 (compose ファイルは最新に差し替え、.env と data/ postgres-data/ はそのまま)。
+# 再実行 = 更新 (compose ファイルを最新にして pull → up。.env と data/ postgres-data/ hf-cache/ はそのまま)。
 set -euo pipefail
 
 INSTALL_DIR="${DB_INSTALL_DIR:-$HOME/digitalbase}"
 BASE_URL="${DB_SCRIPTS_URL:-https://pub-a2cab4360f1748cab5ae1c0f12cddc0a.r2.dev/vite-scripts}"
-GPU="${GPU:-0}"                       # 1 (= cuda) / rocm / xpu = docker-compose.vllm.yml を重ねる (rocm / xpu はさらに -rocm / -xpu を重ねる)
-EDITION="${EDITION:-}"                # ollama | vllm。空なら GPU 指定の時 vllm、それ以外 ollama (初回の .env にだけ効く)
-APP_PORT="${APP_PORT:-}"              # 初回の .env にだけ効く
+PLATFORM="${DB_PLATFORM:-}"
+VERSION="${DB_VERSION:-}"
+PORT_ARG="${APP_PORT:-}"
 
-[ "$GPU" = "cuda" ] && GPU=1
-case "$GPU" in 0|1|rocm|xpu) ;; *) echo "[ERROR] GPU は 0 / 1 (= cuda) / rocm / xpu"; exit 2 ;; esac
-[ -z "$EDITION" ] && { [ "$GPU" != "0" ] && EDITION=vllm || EDITION=ollama; }
+usage() {
+    cat << 'USAGE'
+Usage: install-docker.sh [--platform none|cuda|rocm|xpu] [--version VERSION] [--port PORT]
+  --platform  vLLM in the same stack: cuda (NVIDIA) | rocm (AMD) | xpu (Intel) | none (default: as recorded in .env, else none; env DB_PLATFORM)
+  --version   DigitalBase version: latest | YY.MMDD[.N] | xYYYYMMDD[.N] (default: as recorded in .env, else latest; env DB_VERSION)
+  --port      host port (default: as recorded in .env, else 8000; env APP_PORT)
+  env DB_INSTALL_DIR (default ~/digitalbase)
+USAGE
+}
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --platform) PLATFORM="${2:?--platform requires none|cuda|rocm|xpu}"; shift ;;
+        --version) VERSION="${2:?--version requires latest|YY.MMDD[.N]|xYYYYMMDD[.N]}"; shift ;;
+        --port) PORT_ARG="${2:?--port requires a number}"; shift ;;
+        -h|--help) usage; exit 0 ;;
+        *) echo "[ERROR] Unknown option: $1"; usage; exit 2 ;;
+    esac
+    shift
+done
+case "$PLATFORM" in ""|none|cuda|rocm|xpu) ;; *) echo "[ERROR] --platform must be none, cuda, rocm or xpu (got: $PLATFORM)"; exit 2 ;; esac
+if [ -n "$VERSION" ]; then
+    printf '%s' "$VERSION" | grep -Eq '^(latest|[0-9]{2}\.[0-9]{4}(\.[0-9]+)?|x[0-9]{8}(\.[0-9]+)?)$' \
+        || { echo "[ERROR] --version must be latest, a version (YY.MMDD[.N]), or a release tag (xYYYYMMDD[.N])"; exit 2; }
+fi
+if [ -n "$PORT_ARG" ]; then
+    printf '%s' "$PORT_ARG" | grep -Eq '^[0-9]{1,5}$' || { echo "[ERROR] --port must be a number (got: $PORT_ARG)"; exit 2; }
+fi
 
-echo "============================================"
-echo "  DigitalBase Docker Installer"
-echo "============================================"
-echo "  install dir : $INSTALL_DIR"
-echo "  edition     : $EDITION$([ "$GPU" != "0" ] && echo " (vLLM を container で同梱、GPU=$GPU)")"
-echo ""
-
-# ── 1. preflight ──────────────────────────────────────────────────────
-command -v docker >/dev/null 2>&1 || {
-    echo "[ERROR] Docker が install されていません: https://docs.docker.com/get-docker/"
-    exit 1
-}
-docker info >/dev/null 2>&1 || {
-    echo "[ERROR] Docker daemon が起動していません (Linux: sudo systemctl start docker / Mac・Win: Docker Desktop を起動)"
-    exit 1
-}
-docker compose version >/dev/null 2>&1 || {
-    echo "[ERROR] docker compose (v2) がありません: https://docs.docker.com/compose/install/"
-    exit 1
-}
-COMPOSE_VER=$(docker compose version --short 2>/dev/null | sed 's/^v//')
+command -v docker >/dev/null 2>&1 || { echo "[ERROR] Docker is not installed: https://docs.docker.com/get-docker/"; exit 1; }
+docker info >/dev/null 2>&1 || { echo "[ERROR] The Docker daemon is not running (Linux: sudo systemctl start docker / Mac・Windows: start Docker Desktop)"; exit 1; }
+docker compose version >/dev/null 2>&1 || { echo "[ERROR] docker compose (v2) is not installed: https://docs.docker.com/compose/install/"; exit 1; }
+COMPOSE_VER="$(docker compose version --short 2>/dev/null | sed 's/^v//; s/[^0-9.].*//')"
 if [ "$(printf '%s\n' "2.24.0" "$COMPOSE_VER" | sort -V | head -1)" != "2.24.0" ]; then
-    echo "[WARN] docker compose $COMPOSE_VER は古い可能性があります (2.24 以降を推奨: .env が無い時の起動に必要)"
+    echo "[ERROR] docker compose $COMPOSE_VER is too old (2.24 or later is required)"; exit 1
 fi
-if [ "$GPU" = "1" ] && ! docker info 2>/dev/null | grep -qi nvidia; then
-    echo "[WARN] NVIDIA Container Toolkit が見つかりません。GPU=1 は nvidia runtime が要ります: https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/"
-fi
-[ "$GPU" = "rocm" ] && [ ! -e /dev/kfd ] && echo "[WARN] /dev/kfd がありません。GPU=rocm はホストに AMD GPU driver (amdgpu) が要ります"
-[ "$GPU" = "xpu" ] && ! ls /dev/dri/renderD* >/dev/null 2>&1 && echo "[WARN] /dev/dri がありません。GPU=xpu はホストに Intel GPU driver が要ります"
 
-# ── 2. compose ファイル (常に最新へ差し替え) ───────────────────────────
 mkdir -p "$INSTALL_DIR/data" "$INSTALL_DIR/postgres-data"
 cd "$INSTALL_DIR"
-COMPOSE_FILES="docker-compose.yml docker-compose.vllm.yml docker.env.example"
-case "$GPU" in rocm|xpu) COMPOSE_FILES="$COMPOSE_FILES docker-compose.vllm-$GPU.yml" ;; esac
-for f in $COMPOSE_FILES; do
-    curl -fsSL "$BASE_URL/$f" -o "$f.tmp" || { echo "[ERROR] $f を取得できません ($BASE_URL)"; rm -f "$f.tmp"; exit 1; }
+for f in docker-compose.yml docker.env.example; do
+    curl -fsSL "$BASE_URL/$f" -o "$f.tmp" || { rm -f "$f.tmp"; echo "[ERROR] Could not download $f ($BASE_URL)"; exit 1; }
     mv "$f.tmp" "$f"
 done
+rm -f docker-compose.vllm.yml docker-compose.vllm-rocm.yml docker-compose.vllm-xpu.yml
 
-# ── 3. .env (初回だけ雛形から作る。既存は触らない) ──────────────────────
+env_get() {
+    [ -f .env ] || return 0
+    awk -v k="$1" 'index($0, k "=") == 1 { v = substr($0, length(k) + 2); sub(/[ \t]+#.*$/, "", v); gsub(/^[ \t]+|[ \t]+$/, "", v) } END { print v }' .env
+}
+env_set() {
+    if grep -q "^$1=" .env && [ "$(env_get "$1")" = "$2" ]; then return 0; fi
+    awk -v k="$1" -v v="$2" 'index($0, k "=") == 1 { if (!done) print k "=" v; done = 1; next } { print } END { if (!done) print k "=" v }' .env > .env.tmp
+    mv .env.tmp .env
+}
+env_unset() { awk -v k="$1" 'index($0, k "=") != 1' .env > .env.tmp; mv .env.tmp .env; }
+
 if [ ! -f .env ]; then
     cp docker.env.example .env
-    sed -i.bak "s|^#LLM_BACKEND=.*|LLM_BACKEND=$EDITION|" .env
-    [ -n "$APP_PORT" ] && sed -i.bak "s|^#APP_PORT=.*|APP_PORT=$APP_PORT|" .env
-    rm -f .env.bak
-    echo "[OK] .env を作成: $INSTALL_DIR/.env"
-else
-    echo "[INFO] 既存の .env を保持: $INSTALL_DIR/.env"
+    env_set DB_PASSWORD "$(head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+    echo "[OK] Created $INSTALL_DIR/.env"
 fi
-PORT=$(sed -n 's/^APP_PORT=\(.*\)$/\1/p' .env | tail -1)
-PORT="${PORT:-8000}"
 
-# ── 4. 起動 (再実行なら更新) ──────────────────────────────────────────
-FILES="-f docker-compose.yml"
-[ "$GPU" != "0" ] && FILES="$FILES -f docker-compose.vllm.yml"
-case "$GPU" in rocm|xpu) FILES="$FILES -f docker-compose.vllm-$GPU.yml" ;; esac
-# shellcheck disable=SC2086
-docker compose $FILES pull
-# shellcheck disable=SC2086
-docker compose $FILES up -d
+[ -n "$PLATFORM" ] || PLATFORM="$(env_get COMPOSE_PROFILES)"
+case "$PLATFORM" in cuda|rocm|xpu) ;; *) PLATFORM=none ;; esac
+case "$PLATFORM:$(uname -m)" in rocm:aarch64|rocm:arm64|xpu:aarch64|xpu:arm64) echo "[ERROR] the $PLATFORM image of vLLM is x86_64 only"; exit 2 ;; esac
+if [ "$PLATFORM" = "none" ]; then
+    [ -z "$(env_get COMPOSE_PROFILES)" ] || env_set COMPOSE_PROFILES ""
+    if [ "$(env_get VLLM_BASE_URL)" = "http://vllm-chat:8000" ]; then
+        env_set LLM_BACKEND ollama
+        env_unset VLLM_BASE_URL
+        env_unset VLLM_EMBED_BASE_URL
+    fi
+else
+    env_set COMPOSE_PROFILES "$PLATFORM"
+    env_set LLM_BACKEND vllm
+    env_set VLLM_BASE_URL "http://vllm-chat:8000"
+    env_set VLLM_EMBED_BASE_URL "http://vllm-embed:8000"
+fi
+case "$VERSION" in
+    "") ;;
+    latest) env_unset DB_IMAGE_TAG ;;
+    x*) env_set DB_IMAGE_TAG "${VERSION#x}" ;;
+    *) env_set DB_IMAGE_TAG "$(printf '%s' "$VERSION" | sed -E 's/^([0-9]{2})\.([0-9]{4})/20\1\2/')" ;;
+esac
+[ -z "$PORT_ARG" ] || env_set APP_PORT "$PORT_ARG"
+PORT="$(env_get APP_PORT)"; PORT="${PORT:-8000}"
 
-echo ""
-echo -n "起動待ち"
-for i in $(seq 1 60); do
-    if curl -fs -m 3 "http://localhost:$PORT/health" >/dev/null 2>&1; then echo " [OK]"; break; fi
-    echo -n "."; sleep 2
-    [ "$i" = 60 ] && echo " (まだ応答がありません: docker compose logs -f app で確認)"
+case "$PLATFORM" in
+    cuda) docker info 2>/dev/null | grep -qi nvidia || echo "[WARN] NVIDIA Container Toolkit not found: https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/" ;;
+    rocm) [ -e /dev/kfd ] || echo "[WARN] /dev/kfd not found: install the AMD GPU driver (amdgpu) on the host" ;;
+    xpu)  ls /dev/dri/renderD* >/dev/null 2>&1 || echo "[WARN] /dev/dri not found: install the Intel GPU driver on the host" ;;
+esac
+
+TAG="$(env_get DB_IMAGE_TAG)"
+echo "DigitalBase (Docker): $INSTALL_DIR, port $PORT, image ${TAG:-latest}, vLLM $PLATFORM"
+ACTIVE="$(docker compose config --services)"
+for service in $(docker compose --profile '*' config --services); do
+    printf '%s\n' "$ACTIVE" | grep -qx "$service" && continue
+    if [ -n "$(docker compose --profile '*' ps -aq "$service" 2>/dev/null)" ]; then docker compose --profile '*' rm -sf "$service"; fi
 done
+docker compose pull
+docker compose up -d --remove-orphans
 
-echo ""
-echo "============================================"
-echo "  [OK] DigitalBase"
-echo "============================================"
-echo "  URL      : http://localhost:$PORT   (admin@local / admin123)"
-echo "  設定     : $INSTALL_DIR/.env"
-echo "  データ   : $INSTALL_DIR/data, $INSTALL_DIR/postgres-data"
-echo "  ライセンス: $INSTALL_DIR/data/license.lic に置く (または 管理画面 > ライセンス から upload)"
-echo ""
-echo "  操作 (cd $INSTALL_DIR):"
-echo "    docker compose logs -f app   # ログ"
-echo "    docker compose down          # 停止 (データは残る)"
-echo "    docker compose up -d         # 起動"
-echo "    更新: この installer を再実行 (= pull して up)"
-[ "$GPU" != "0" ] && echo "    GPU 版は docker compose に $FILES を付ける"
-echo "============================================"
+printf 'Waiting for the app'
+for i in $(seq 1 90); do
+    if curl -fs -m 3 "http://localhost:$PORT/health" >/dev/null 2>&1; then echo " [OK]"; break; fi
+    printf '.'; sleep 2
+    [ "$i" = 90 ] && echo " (no response yet: docker compose logs -f app)"
+done
+[ "$PLATFORM" = "none" ] || echo "vLLM loads the models in the background (first start downloads them): docker compose logs -f vllm-chat-$PLATFORM"
+
+cat << EOF
+
+[OK] DigitalBase  http://localhost:$PORT   (admin@local / admin123)
+  settings : $INSTALL_DIR/.env
+  data     : $INSTALL_DIR/data, postgres-data, hf-cache
+  license  : put it at $INSTALL_DIR/data/license.lic (or upload it in Admin > License)
+  cd $INSTALL_DIR && docker compose logs -f app | down | up -d
+  update   : run this installer again
+EOF
