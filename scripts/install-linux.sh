@@ -3,7 +3,7 @@
 #
 #   curl -fsSL https://raw.githubusercontent.com/lmlight-app/staging-vite/main/scripts/install-linux.sh | bash
 #   curl -fsSL .../install-linux.sh | bash -s -- --engine vllm                  # GPU (NVIDIA)。AMD は --platform rocm、Intel は --platform xpu
-#   curl -fsSL .../install-linux.sh | bash -s -- --version 26.1010.3
+#   curl -fsSL .../install-linux.sh | bash -s -- --version 26.10.124
 #   curl -fsSL .../install-linux.sh | bash -s -- --bundle /media/usb/db [--engine vllm]   # make an offline bundle (installs nothing here)
 #   bash /media/usb/db/install-linux.sh                                          # offline host: install or update from the bundle
 set -e
@@ -18,7 +18,7 @@ BASE_URL="${DB_BASE_URL:-https://github.com/lmlight-app/dist_vite/releases/lates
 VERSION_BASE_URL="https://github.com/lmlight-app/dist_vite/releases/download/"
 INSTALL_DIR="${DB_INSTALL_DIR:-$HOME/.local/db}"
 SCRIPTS_URL="${DB_SCRIPTS_URL:-https://raw.githubusercontent.com/lmlight-app/staging-vite/main/scripts/}"
-MIN_SETUP_VERSION="26.1012"
+MIN_SETUP_VERSION="26.10.120"
 ARCH="$(uname -m)"
 case "$ARCH" in x86_64|amd64) ARCH="amd64" ;; aarch64|arm64) ARCH="arm64" ;; *) echo "[ERROR] unsupported CPU: $ARCH"; exit 1 ;; esac
 BINARY_NAME="lmlight-vite-linux-$ARCH"
@@ -30,7 +30,7 @@ BUNDLE_DIR=""
 PASS=()
 while [ $# -gt 0 ]; do
     case "$1" in
-        --version) DB_VERSION="${2:?--version requires latest|YY.MMDD[.N]|xYYYYMMDD[.N][-linux]}"; shift ;;
+        --version) DB_VERSION="${2:?--version requires latest|YY.M.N|xYYYYMMDD[.N][-linux]}"; shift ;;
         --offline)
             OFFLINE=1
             if [ -n "${2:-}" ] && [ "${2#-}" = "$2" ]; then OFFLINE_DIR="$2"; shift; fi ;;
@@ -49,27 +49,24 @@ if [ -z "$OFFLINE_DIR" ] && [ -z "$BUNDLE_DIR" ] && [ -f "$0" ] && [ -f "$(dirna
 fi
 [ -z "$BUNDLE_DIR" ] || [ -z "$OFFLINE_DIR" ] || { echo "[ERROR] --bundle cannot be combined with --offline"; exit 2; }
 [ -z "$OFFLINE_DIR" ] || { OFFLINE=1; OFFLINE_DIR="$(cd "$OFFLINE_DIR" && pwd -P)"; }
-printf '%s' "$DB_VERSION" | grep -Eq '^(latest|[0-9]{2}\.[0-9]{4}(\.[0-9]+)?|x[0-9]{8}(\.[0-9]+)?(-[a-z0-9]+)?)$' \
-    || { echo "[ERROR] --version must be latest, a version (YY.MMDD[.N]), or a release tag (xYYYYMMDD[.N][-linux])"; exit 2; }
+printf '%s' "$DB_VERSION" | grep -Eq '^(latest|[0-9]{2}\.[0-9]{1,2}\.[0-9]{1,3}|x[0-9]{8}(\.[0-9]+)?(-[a-z0-9]+)?|[0-9]{2}\.[0-9]{4}(\.[0-9]+)?)$' \
+    || { echo "[ERROR] --version must be latest, a version (26.10.124), or a release tag (x20261012.4)"; exit 2; }
+release_tag() { case "$1" in x*) printf '%s' "$1" ;; *) printf '%s' "$1" | awk -F. '{ if ($2 <= 12) { m = $2; d = int($3 / 10); b = $3 % 10 } else { m = int($2 / 100); d = $2 % 100; b = $3 + 0 }
+    printf "x20%02d%02d%02d", $1, m, d; if (b) printf ".%d", b }' ;; esac; }
+display_version() { printf '%s' "${1#x}" | sed -E 's/-[a-z0-9]+$//' | awk -F. '{ printf "%d.%d.%d", substr($1, 3, 2), substr($1, 5, 2), substr($1, 7, 2) * 10 + $2 }'; }
 
 TARGET_VERSION=""
 if [ "$DB_VERSION" != "latest" ]; then
     [ "$OFFLINE" -eq 0 ] || { echo "[ERROR] --version cannot be combined with --offline (the offline directory decides the version)"; exit 2; }
-    RELEASE_REF="$DB_VERSION"
+    RELEASE_REF="$(release_tag "$DB_VERSION")"
 # BEGIN staging-only
-    case "$RELEASE_REF" in
-        x*) ;;
-        *)
-            RAW_VERSION="20$(printf '%s' "$RELEASE_REF" | sed -E 's/^([0-9]{2})\.([0-9]{4})/\1\2/')"
-            CANDIDATES="$(curl -fsSL "https://api.github.com/repos/lmlight-app/dist_vite/releases?per_page=100" 2>/dev/null \
-                | grep -o '"tag_name": *"x'"$RAW_VERSION"'\(-[a-z0-9]*\)\{0,1\}"' | sed -E 's/.*"(x[^"]+)".*/\1/')"
-            RELEASE_REF="$(printf '%s\n' "$CANDIDATES" | grep -m1 -- '-linux$' || printf '%s\n' "$CANDIDATES" | grep -m1 -v -- '-' || true)"
-            [ -n "$RELEASE_REF" ] || { echo "[ERROR] Version $DB_VERSION was not found in releases; pass the release tag instead (xYYYYMMDD[.N][-linux])"; exit 1; }
-            ;;
-    esac
+    CANDIDATES="$(curl -fsSL "https://api.github.com/repos/lmlight-app/dist_vite/releases?per_page=100" 2>/dev/null \
+        | grep -o '"tag_name": *"'"${RELEASE_REF%%-*}"'\(-[a-z0-9]*\)\{0,1\}"' | sed -E 's/.*"(x[^"]+)".*/\1/')"
+    RELEASE_REF="$(printf '%s\n' "$CANDIDATES" | grep -m1 -- '-linux$' || printf '%s\n' "$CANDIDATES" | grep -m1 -v -- '-' || true)"
+    [ -n "$RELEASE_REF" ] || { echo "[ERROR] Version $DB_VERSION was not found in releases"; exit 1; }
 # END staging-only
     [ -n "${DB_BASE_URL:-}" ] || BASE_URL="${VERSION_BASE_URL}${RELEASE_REF}"
-    TARGET_VERSION="$(printf '%s' "$RELEASE_REF" | sed -E 's/^x20([0-9]{2})([0-9]{4})/\1.\2/; s/-[a-z0-9]+$//')"
+    TARGET_VERSION="$(display_version "$RELEASE_REF")"
 fi
 
 TARGET_DIR="$INSTALL_DIR"
@@ -93,6 +90,7 @@ if [ -z "$TARGET_VERSION" ]; then
     MANIFEST="$(mktemp)"
     if fetch latest.json "$MANIFEST" 2>/dev/null; then
         TARGET_VERSION="$(sed -n 's/.*"version" *: *"\([^"]*\)".*/\1/p' "$MANIFEST" | head -1)"
+        [ -z "$TARGET_VERSION" ] || TARGET_VERSION="$(display_version "$(release_tag "$TARGET_VERSION")")"
     fi
     rm -f "$MANIFEST"
 fi

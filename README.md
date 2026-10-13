@@ -48,10 +48,10 @@ irm https://raw.githubusercontent.com/lmlight-app/staging-vite/main/scripts/inst
 ```bash
 curl -fsSL https://raw.githubusercontent.com/lmlight-app/staging-vite/main/scripts/install-linux-vllm.sh | bash
 
-特定バージョンを入れる / 戻す (Linux は `--version`、macOS / Windows は環境変数 `DB_VERSION`。`YY.MMDD[.N]` の形か release tag `xYYYYMMDD[.N][-linux]`):
+特定バージョンを入れる / 戻す (Linux は `--version`、macOS / Windows は環境変数 `DB_VERSION`。`26.10.124` の形 (年.月.日と枝番) か release tag `x20261012.4[-linux]`。旧形式 `26.1012.4` も可):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/lmlight-app/staging-vite/main/scripts/install-linux-vllm.sh | bash -s -- --version YY.MMDD.N
+curl -fsSL https://raw.githubusercontent.com/lmlight-app/staging-vite/main/scripts/install-linux-vllm.sh | bash -s -- --version 26.10.124
 ```
 
 入っている版より古い版も入ります (警告を 1 行出します。新しい版で書かれたデータは読めないことがあります)。途中で失敗した時は、同じコマンドをもう一度実行します。

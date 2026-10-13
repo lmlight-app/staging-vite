@@ -7,32 +7,29 @@ BASE_URL="${DB_BASE_URL:-https://github.com/lmlight-app/dist_vite/releases/lates
 VERSION_BASE_URL="https://github.com/lmlight-app/dist_vite/releases/download/"
 while [ $# -gt 0 ]; do
     case "$1" in
-        --version) DB_VERSION="${2:?--version requires latest|YY.MMDD[.N]|xYYYYMMDD[.N][-macos]}"; shift ;;
+        --version) DB_VERSION="${2:?--version requires latest|YY.M.N|xYYYYMMDD[.N][-macos]}"; shift ;;
         -h|--help) echo "Usage: install-macos.sh [--version VERSION]"; exit 0 ;;
         *) echo "[ERROR] Unknown option: $1 (usage: install-macos.sh [--version VERSION])"; exit 2 ;;
     esac
     shift
 done
 DB_VERSION="${DB_VERSION:-latest}"
-printf '%s' "$DB_VERSION" | grep -Eq '^(latest|[0-9]{2}\.[0-9]{4}(\.[0-9]+)?|x[0-9]{8}(\.[0-9]+)?(-[a-z0-9]+)?)$' \
-    || { echo "[ERROR] --version must be latest, a version (YY.MMDD[.N]), or a release tag (xYYYYMMDD[.N][-macos])"; exit 2; }
+printf '%s' "$DB_VERSION" | grep -Eq '^(latest|[0-9]{2}\.[0-9]{1,2}\.[0-9]{1,3}|x[0-9]{8}(\.[0-9]+)?(-[a-z0-9]+)?|[0-9]{2}\.[0-9]{4}(\.[0-9]+)?)$' \
+    || { echo "[ERROR] --version must be latest, a version (26.10.124), or a release tag (x20261012.4)"; exit 2; }
+release_tag() { case "$1" in x*) printf '%s' "$1" ;; *) printf '%s' "$1" | awk -F. '{ if ($2 <= 12) { m = $2; d = int($3 / 10); b = $3 % 10 } else { m = int($2 / 100); d = $2 % 100; b = $3 + 0 }
+    printf "x20%02d%02d%02d", $1, m, d; if (b) printf ".%d", b }' ;; esac; }
+display_version() { printf '%s' "${1#x}" | sed -E 's/-[a-z0-9]+$//' | awk -F. '{ printf "%d.%d.%d", substr($1, 3, 2), substr($1, 5, 2), substr($1, 7, 2) * 10 + $2 }'; }
 TARGET_VERSION=""
 if [ "$DB_VERSION" != "latest" ]; then
-    RELEASE_REF="$DB_VERSION"
+    RELEASE_REF="$(release_tag "$DB_VERSION")"
 # BEGIN staging-only
-    case "$RELEASE_REF" in
-        x*) ;;
-        *)
-            RAW_VERSION="20$(printf '%s' "$RELEASE_REF" | sed -E 's/^([0-9]{2})\.([0-9]{4})/\1\2/')"
-            CANDIDATES="$(curl -fsSL "https://api.github.com/repos/lmlight-app/dist_vite/releases?per_page=100" 2>/dev/null \
-                | grep -o '"tag_name": *"x'"$RAW_VERSION"'\(-[a-z0-9]*\)\{0,1\}"' | sed -E 's/.*"(x[^"]+)".*/\1/')"
-            RELEASE_REF="$(printf '%s\n' "$CANDIDATES" | grep -m1 -- '-macos$' || printf '%s\n' "$CANDIDATES" | grep -m1 -v -- '-' || true)"
-            [ -n "$RELEASE_REF" ] || { echo "[ERROR] Version $DB_VERSION was not found in releases; pass the release tag instead (xYYYYMMDD[.N][-macos])"; exit 1; }
-            ;;
-    esac
+    CANDIDATES="$(curl -fsSL "https://api.github.com/repos/lmlight-app/dist_vite/releases?per_page=100" 2>/dev/null \
+        | grep -o '"tag_name": *"'"${RELEASE_REF%%-*}"'\(-[a-z0-9]*\)\{0,1\}"' | sed -E 's/.*"(x[^"]+)".*/\1/')"
+    RELEASE_REF="$(printf '%s\n' "$CANDIDATES" | grep -m1 -- '-macos$' || printf '%s\n' "$CANDIDATES" | grep -m1 -v -- '-' || true)"
+    [ -n "$RELEASE_REF" ] || { echo "[ERROR] Version $DB_VERSION was not found in releases"; exit 1; }
 # END staging-only
     [ -n "${DB_BASE_URL:-}" ] || BASE_URL="${VERSION_BASE_URL}${RELEASE_REF}"
-    TARGET_VERSION="$(printf '%s' "$RELEASE_REF" | sed -E 's/^x20([0-9]{2})([0-9]{4})/\1.\2/; s/-[a-z0-9]+$//')"
+    TARGET_VERSION="$(display_version "$RELEASE_REF")"
 fi
 INSTALL_DIR="${DB_INSTALL_DIR:-$HOME/.local/db}"
 ARCH="$(uname -m)"
@@ -79,7 +76,8 @@ INSTALLED_VERSION=""
 if [ -x "$INSTALL_DIR/api" ] && [ -n "$(find "$INSTALL_DIR/api" -newermt 2026-09-24 2>/dev/null)" ]; then
     INSTALLED_VERSION="$("$INSTALL_DIR/api" --version 2>/dev/null | awk '{print $NF}' || true)"
 fi
-printf '%s' "$INSTALLED_VERSION" | grep -Eq '^[0-9]{2}\.[0-9]{4}(\.[0-9]+)?$' || INSTALLED_VERSION=""
+printf '%s' "$INSTALLED_VERSION" | grep -Eq '^[0-9]{2}\.([0-9]{1,2}\.[0-9]{1,3}|[0-9]{4}(\.[0-9]+)?)$' || INSTALLED_VERSION=""
+[ -z "$INSTALLED_VERSION" ] || INSTALLED_VERSION="$(display_version "$(release_tag "$INSTALLED_VERSION")")"
 if [ -n "$TARGET_VERSION" ] && [ -n "$INSTALLED_VERSION" ] && version_lt "$TARGET_VERSION" "$INSTALLED_VERSION"; then
     log "[WARN] $TARGET_VERSION is older than the installed $INSTALLED_VERSION. Data written by the newer version may become unreadable."
 fi

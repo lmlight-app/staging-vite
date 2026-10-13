@@ -9,20 +9,27 @@ $ErrorActionPreference = "Stop"
 $BASE_URL = if ($env:DB_BASE_URL) { $env:DB_BASE_URL } else { "https://github.com/lmlight-app/dist_vite/releases/latest/download" }
 $VERSION_BASE_URL="https://github.com/lmlight-app/dist_vite/releases/download/"
 $DB_VERSION = if ($env:DB_VERSION) { $env:DB_VERSION } else { "latest" }
-if ($DB_VERSION -notmatch '^(latest|\d{2}\.\d{4}(\.\d+)?|x\d{8}(\.\d+)?(-[a-z0-9]+)?)$') {
-    throw "DB_VERSION must be latest, a version (YY.MMDD[.N]), or a release tag (xYYYYMMDD[.N][-windows])"
+if ($DB_VERSION -notmatch '^(latest|\d{2}\.\d{1,2}\.\d{1,3}|x\d{8}(\.\d+)?(-[a-z0-9]+)?|\d{2}\.\d{4}(\.\d+)?)$') {
+    throw "DB_VERSION must be latest, a version (26.10.124), or a release tag (x20261012.4)"
+}
+function Get-ReleaseTag([string]$Version) {
+    if ($Version -like "x*") { return $Version }
+    $p = $Version.Split('.') | ForEach-Object { [int]$_ }
+    if ($p[1] -le 12) { $m = $p[1]; $d = [math]::Floor($p[2] / 10); $b = $p[2] % 10 }
+    else { $m = [math]::Floor($p[1] / 100); $d = $p[1] % 100; $b = $(if ($p.Count -gt 2) { $p[2] } else { 0 }) }
+    $tag = "x20{0:D2}{1:D2}{2:D2}" -f $p[0], [int]$m, [int]$d
+    if ($b) { $tag += ".$b" }
+    return $tag
 }
 if ($DB_VERSION -ne "latest" -and -not $env:DB_BASE_URL) {
-    $releaseRef = $DB_VERSION
+    $releaseRef = Get-ReleaseTag $DB_VERSION
 # BEGIN staging-only
-    if ($releaseRef -notlike "x*") {
-        $raw = "20" + ($releaseRef -replace '^(\d{2})\.(\d{4})', '$1$2')
-        $tags = (Invoke-RestMethod -Uri "https://api.github.com/repos/lmlight-app/dist_vite/releases?per_page=100" -UseBasicParsing).tag_name |
-            Where-Object { $_ -match ('^x' + [regex]::Escape($raw) + '(-[a-z0-9]+)?$') }
-        $releaseRef = ($tags | Where-Object { $_ -like "*-windows" } | Select-Object -First 1)
-        if (-not $releaseRef) { $releaseRef = ($tags | Where-Object { $_ -notlike "*-*" } | Select-Object -First 1) }
-        if (-not $releaseRef) { throw "Version $DB_VERSION was not found in releases; set DB_VERSION to the release tag instead (xYYYYMMDD[.N][-windows])" }
-    }
+    $base = $releaseRef -replace '-[a-z0-9]+$', ''
+    $tags = (Invoke-RestMethod -Uri "https://api.github.com/repos/lmlight-app/dist_vite/releases?per_page=100" -UseBasicParsing).tag_name |
+        Where-Object { $_ -match ('^' + [regex]::Escape($base) + '(-[a-z0-9]+)?$') }
+    $releaseRef = ($tags | Where-Object { $_ -like "*-windows" } | Select-Object -First 1)
+    if (-not $releaseRef) { $releaseRef = ($tags | Where-Object { $_ -notlike "*-*" } | Select-Object -First 1) }
+    if (-not $releaseRef) { throw "Version $DB_VERSION was not found in releases" }
 # END staging-only
     $BASE_URL = "$VERSION_BASE_URL$releaseRef"
 }

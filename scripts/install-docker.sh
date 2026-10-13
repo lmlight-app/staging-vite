@@ -3,7 +3,7 @@
 #
 #   curl -fsSL https://raw.githubusercontent.com/lmlight-app/staging-vite/main/scripts/install-docker.sh | bash
 #   curl -fsSL .../install-docker.sh | bash -s -- --platform cuda        # vLLM も同じ stack で (NVIDIA)。AMD は rocm、Intel は xpu
-#   curl -fsSL .../install-docker.sh | bash -s -- --version 26.1010.3     # バージョンを固定
+#   curl -fsSL .../install-docker.sh | bash -s -- --version 26.10.124     # バージョンを固定
 #   curl -fsSL .../install-docker.sh | bash -s -- --port 8080
 #
 # 再実行 = 更新 (compose ファイルを最新にして pull → up。.env と data/ postgres-data/ hf-cache/ はそのまま)。
@@ -19,7 +19,7 @@ usage() {
     cat << 'USAGE'
 Usage: install-docker.sh [--platform none|cuda|rocm|xpu] [--version VERSION] [--port PORT]
   --platform  vLLM in the same stack: cuda (NVIDIA) | rocm (AMD) | xpu (Intel) | none (default: as recorded in .env, else none; env DB_PLATFORM)
-  --version   DigitalBase version: latest | YY.MMDD[.N] | YYYYMMDD[.N] | xYYYYMMDD[.N] (default: as recorded in .env, else latest; env DB_VERSION)
+  --version   DigitalBase version: latest | 26.10.124 | image tag 20261012.4 (default: as recorded in .env, else latest; env DB_VERSION)
   --port      host port (default: as recorded in .env, else 8000; env APP_PORT)
   env DB_INSTALL_DIR (default ~/digitalbase)
 USAGE
@@ -27,7 +27,7 @@ USAGE
 while [ $# -gt 0 ]; do
     case "$1" in
         --platform) PLATFORM="${2:?--platform requires none|cuda|rocm|xpu}"; shift ;;
-        --version) VERSION="${2:?--version requires latest|YY.MMDD[.N]|YYYYMMDD[.N]|xYYYYMMDD[.N]}"; shift ;;
+        --version) VERSION="${2:?--version requires latest|26.10.124|20261012.4}"; shift ;;
         --port) PORT_ARG="${2:?--port requires a number}"; shift ;;
         -h|--help) usage; exit 0 ;;
         *) echo "[ERROR] Unknown option: $1"; usage; exit 2 ;;
@@ -36,8 +36,8 @@ while [ $# -gt 0 ]; do
 done
 case "$PLATFORM" in ""|none|cuda|rocm|xpu) ;; *) echo "[ERROR] --platform must be none, cuda, rocm or xpu (got: $PLATFORM)"; exit 2 ;; esac
 if [ -n "$VERSION" ]; then
-    printf '%s' "$VERSION" | grep -Eq '^(latest|[0-9]{2}\.[0-9]{4}(\.[0-9]+)?|x?[0-9]{8}(\.[0-9]+)?)$' \
-        || { echo "[ERROR] --version must be latest, a version (YY.MMDD[.N]), or an image tag (YYYYMMDD[.N])"; exit 2; }
+    printf '%s' "$VERSION" | grep -Eq '^(latest|[0-9]{2}\.[0-9]{1,2}\.[0-9]{1,3}|x?[0-9]{8}(\.[0-9]+)?|[0-9]{2}\.[0-9]{4}(\.[0-9]+)?)$' \
+        || { echo "[ERROR] --version must be latest, a version (26.10.124), or an image tag (20261012.4)"; exit 2; }
 fi
 if [ -n "$PORT_ARG" ]; then
     printf '%s' "$PORT_ARG" | grep -Eq '^[0-9]{1,5}$' || { echo "[ERROR] --port must be a number (got: $PORT_ARG)"; exit 2; }
@@ -97,7 +97,8 @@ case "$VERSION" in
     "") TAG="$(env_get DB_IMAGE_TAG)" ;;
     latest) TAG="" ;;
     x*|[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]*) TAG="${VERSION#x}" ;;
-    *) TAG="$(printf '%s' "$VERSION" | sed -E 's/^([0-9]{2})\.([0-9]{4})/20\1\2/')" ;;
+    *) TAG="$(printf '%s' "$VERSION" | awk -F. '{ if ($2 <= 12) { m = $2; d = int($3 / 10); b = $3 % 10 } else { m = int($2 / 100); d = $2 % 100; b = $3 + 0 }
+           printf "20%02d%02d%02d", $1, m, d; if (b) printf ".%d", b }')" ;;
 esac
 PORT="${PORT_ARG:-$(env_get APP_PORT)}"; PORT="${PORT:-8000}"
 
