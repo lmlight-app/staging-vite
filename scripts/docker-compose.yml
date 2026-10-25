@@ -26,7 +26,7 @@ x-vllm: &vllm
     start_period: 120s
 
 x-vllm-chat-command: &vllm_chat_command
-  - --model=${VLLM_CHAT_MODEL:-Qwen/Qwen3-1.7B}
+  - --model=${ENGINE_CHAT_MODEL:-${VLLM_CHAT_MODEL:-Qwen/Qwen3-1.7B}}
   - --max-model-len=${LLM_CONTEXT_LENGTH:-32768}
   - --gpu-memory-utilization=${VLLM_GPU_MEMORY_UTILIZATION_CHAT:-0.70}
   - --enable-auto-tool-choice

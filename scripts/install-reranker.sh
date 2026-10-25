@@ -239,6 +239,8 @@ if [ "$REMOVE" -eq 1 ]; then
         echo "[OK] $UNIT_NAME は登録されていません"
     fi
     set_env RERANK_ENABLED false
+    unset_env RERANK_BASE_URL
+    unset_env RERANK_MODEL
     unset_env VLLM_RERANK_BASE_URL
     unset_env VLLM_RERANK_MODEL
     echo ""
@@ -350,8 +352,10 @@ else
 fi
 
 set_env RERANK_ENABLED true
-set_env VLLM_RERANK_BASE_URL "http://127.0.0.1:${PORT}"
-set_env VLLM_RERANK_MODEL "$MODEL"
+set_env RERANK_BASE_URL "http://127.0.0.1:${PORT}"
+set_env RERANK_MODEL "$MODEL"
+unset_env VLLM_RERANK_BASE_URL
+unset_env VLLM_RERANK_MODEL
 
 echo ""
 echo "=============================================="

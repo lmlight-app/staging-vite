@@ -310,8 +310,8 @@ Write-Info "ステップ 4/5: Ollama をセットアップ中..."
 if (Get-Command ollama -ErrorAction SilentlyContinue) {
     $ctxLen = "16384"  # default
     if (Test-Path "$INSTALL_DIR\.env") {
-        $line = Get-Content "$INSTALL_DIR\.env" | Where-Object { $_ -match '^OLLAMA_CONTEXT_LENGTH=' } | Select-Object -First 1
-        if ($line) { $ctxLen = $line -replace '^OLLAMA_CONTEXT_LENGTH=', '' }
+        $line = Get-Content "$INSTALL_DIR\.env" | Where-Object { $_ -match '^(LLM|OLLAMA)_CONTEXT_LENGTH=' } | Sort-Object { $_ -notmatch '^LLM_' } | Select-Object -First 1
+        if ($line) { $ctxLen = $line -replace '^(LLM|OLLAMA)_CONTEXT_LENGTH=', '' }
     }
     [Environment]::SetEnvironmentVariable("OLLAMA_CONTEXT_LENGTH", $ctxLen, "User")
     $env:OLLAMA_CONTEXT_LENGTH = $ctxLen
@@ -337,7 +337,7 @@ if (-not (Test-Path "$INSTALL_DIR\.env")) {
 LLM_BACKEND=ollama
 DATABASE_URL=postgresql://${DB_USER}:${DB_PASSWORD}@127.0.0.1:${DB_PORT}/${DB_NAME}
 JWT_SECRET=$JWT_SECRET
-OLLAMA_CONTEXT_LENGTH=16384
+LLM_CONTEXT_LENGTH=16384
 OLLAMA_AUTO_START=true
 LICENSE_FILE_PATH=$INSTALL_DIR\license.lic
 FILES_DIR=$INSTALL_DIR\files
