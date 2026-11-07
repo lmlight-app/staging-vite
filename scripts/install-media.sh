@@ -370,6 +370,11 @@ HF_TOKEN="${HF_TOKEN:-$(env_get HF_TOKEN || true)}"
 UVX_ARGS=(--python 3.12 --from "vllm-omni==$OMNI_VERSION" --with "vllm==$VERSION")
 
 unit_content() {
+    local serve="$UVX --offline ${UVX_ARGS[*]} vllm-omni serve $MODEL --omni --host 127.0.0.1 --port $PORT${SERVE_ARGS:+ $SERVE_ARGS}"
+    # SELinux は systemd がホーム配下のファイルを直接起動するのを止める (203/EXEC)。bash 経由なら通る
+    if command -v selinuxenabled >/dev/null 2>&1 && selinuxenabled; then
+        serve="/bin/bash -c \"exec $serve\""
+    fi
     printf '%s\n' "[Unit]
 Description=DB Media ${KIND} generation (vLLM-Omni)
 After=network-online.target
@@ -380,7 +385,7 @@ Wants=network-online.target
 Type=simple
 User=$DB_USER
 WorkingDirectory=$INSTALL_DIR
-ExecStart=$UVX --offline ${UVX_ARGS[*]} vllm-omni serve $MODEL --omni --host 127.0.0.1 --port $PORT${SERVE_ARGS:+ $SERVE_ARGS}
+ExecStart=$serve
 Restart=on-failure
 RestartSec=10
 TimeoutStopSec=60

@@ -18,7 +18,7 @@ if ! command -v psql &>/dev/null; then
         echo "   ※ brew は必須ではありません。pgvector 対応の PostgreSQL が起動していれば OK"
     else
         if command -v dnf &>/dev/null; then
-            echo "   sudo dnf install -y postgresql-server pgvector"
+            echo "   sudo dnf install -y postgresql-server postgresql-contrib pgvector"
             echo "   sudo postgresql-setup --initdb"
             echo "   sudo systemctl enable --now postgresql"
         else

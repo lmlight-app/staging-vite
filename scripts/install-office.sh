@@ -70,17 +70,29 @@ install_appimage() {
     esac
     echo "AppImage を取得します (約 300MB)..."
     mkdir -p "$TOOLS_DIR"
-    curl -fL --progress-bar -o "$TOOLS_DIR/LibreOffice.AppImage" "$APPIMAGE_URL"
+    curl -fL --retry 5 --retry-all-errors --retry-delay 3 --progress-bar -o "$TOOLS_DIR/LibreOffice.AppImage" "$APPIMAGE_URL"
     chmod +x "$TOOLS_DIR/LibreOffice.AppImage"
     rm -rf "$TOOLS_DIR/squashfs-root"
     (cd "$TOOLS_DIR" && ./LibreOffice.AppImage --appimage-extract >/dev/null)
     rm -f "$TOOLS_DIR/LibreOffice.AppImage"
-    printf '#!/bin/sh\nexec "%s/squashfs-root/AppRun" "$@"\n' "$TOOLS_DIR" > "$TOOLS_DIR/soffice"
+    # AppRun は新しいプロファイルの初回に rc=81 (再起動の要求) で何もせず終わる。本体は変換ごとに新しいプロファイルを使うので、再起動を処理する program/soffice を呼ぶ
+    program="$(ls -d "$TOOLS_DIR"/squashfs-root/opt/libreoffice*/program 2>/dev/null | head -1)"
+    [ -x "$program/soffice" ] || { echo "[ERROR] AppImage の中に soffice が見つかりません"; exit 1; }
+    printf '#!/bin/sh\nexec "%s/soffice" "$@"\n' "$program" > "$TOOLS_DIR/soffice"
     chmod +x "$TOOLS_DIR/soffice"
     if [ "$(id -u)" = "0" ] && [ -n "${SUDO_USER:-}" ]; then
         chown -R "$SUDO_USER" "$TOOLS_DIR"
     fi
-    "$TOOLS_DIR/soffice" --version || { echo "[ERROR] LibreOffice を起動できません"; exit 1; }
+    # --version は通っても変換できないことがあるので、本体と同じ呼び方で確かめる
+    check="$(mktemp -d)"
+    printf 'DigitalBase\n' > "$check/check.txt"
+    "$TOOLS_DIR/soffice" --headless --norestore "-env:UserInstallation=file://$check/profile" --convert-to pdf --outdir "$check" "$check/check.txt" > /dev/null 2>&1 || true
+    if [ ! -s "$check/check.pdf" ]; then
+        rm -rf "$check"
+        echo "[ERROR] LibreOffice で変換できません"
+        exit 1
+    fi
+    rm -rf "$check"
 }
 
 if [ "$(uname -s)" != "Linux" ]; then

@@ -226,7 +226,12 @@ install_kokoro_native() {
         echo "Type=simple"
         echo "User=$DB_USER"
         echo "WorkingDirectory=$dir"
-        echo "ExecStart=$dir/.venv/bin/python -m uvicorn api.src.main:app --host 127.0.0.1 --port $PORT"
+        # SELinux は systemd がホーム配下のファイルを直接起動するのを止める (203/EXEC)。bash 経由なら通る
+        if command -v selinuxenabled > /dev/null 2>&1 && selinuxenabled; then
+            echo "ExecStart=/bin/bash -c \"exec $dir/.venv/bin/python -m uvicorn api.src.main:app --host 127.0.0.1 --port $PORT\""
+        else
+            echo "ExecStart=$dir/.venv/bin/python -m uvicorn api.src.main:app --host 127.0.0.1 --port $PORT"
+        fi
         echo "Restart=on-failure"
         echo "RestartSec=10"
         echo "Environment=\"PYTHONPATH=$dir:$dir/api\""
@@ -331,6 +336,8 @@ for _ in $(seq 1 150); do
 done
 if [ "$READY" != true ]; then
     if [ "$USE_NATIVE" = true ]; then
+        # 動かない unit を再起動で回し続けない
+        $SUDO systemctl disable --now "$UNIT_NAME" > /dev/null 2>&1 || true
         echo "[ERROR] ${HEALTH_PATH} が応答しません。ログを確認してください: journalctl -u $UNIT_NAME -n 50"
     else
         echo "[ERROR] ${HEALTH_PATH} が応答しません。ログを確認してください: $DOCKER logs $CONTAINER"

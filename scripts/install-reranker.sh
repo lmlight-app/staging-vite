@@ -307,6 +307,12 @@ snapshot_download(sys.argv[1])
 print("model downloaded")
 PY
 
+SERVE_CMD="$VENV/bin/vllm serve $MODEL --host 127.0.0.1 --port $PORT --gpu-memory-utilization $GPU_FRACTION"
+# SELinux は systemd がホーム配下のファイルを直接起動するのを止める (203/EXEC)。bash 経由なら通る
+if command -v selinuxenabled >/dev/null 2>&1 && selinuxenabled; then
+    SERVE_CMD="/bin/bash -c \"exec $SERVE_CMD\""
+fi
+
 UNIT_CONTENT="[Unit]
 Description=DB Reranker (vLLM cross-encoder)
 After=network-online.target
@@ -317,7 +323,7 @@ Wants=network-online.target
 Type=simple
 User=$DB_USER
 WorkingDirectory=$INSTALL_DIR
-ExecStart=$VENV/bin/vllm serve $MODEL --host 127.0.0.1 --port $PORT --gpu-memory-utilization $GPU_FRACTION
+ExecStart=$SERVE_CMD
 Restart=on-failure
 RestartSec=10
 TimeoutStopSec=60
