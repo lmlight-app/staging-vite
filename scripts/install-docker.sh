@@ -43,7 +43,7 @@ if [ -n "$PORT_ARG" ]; then
     printf '%s' "$PORT_ARG" | grep -Eq '^[0-9]{1,5}$' || { echo "[ERROR] --port must be a number (got: $PORT_ARG)"; exit 2; }
 fi
 
-command -v docker >/dev/null 2>&1 || { echo "[ERROR] Docker is not installed: https://docs.docker.com/get-docker/"; exit 1; }
+command -v docker >/dev/null 2>&1 || { echo "[ERROR] Docker is not installed: https://docs.docker.com/get-docker/ (RHEL: https://docs.docker.com/engine/install/rhel/)"; exit 1; }
 docker info >/dev/null 2>&1 || { echo "[ERROR] The Docker daemon is not running (Linux: sudo systemctl start docker / Mac・Windows: start Docker Desktop)"; exit 1; }
 docker compose version >/dev/null 2>&1 || { echo "[ERROR] docker compose (v2) is not installed: https://docs.docker.com/compose/install/"; exit 1; }
 COMPOSE_VER="$(docker compose version --short 2>/dev/null | sed 's/^v//; s/[^0-9.].*//')"

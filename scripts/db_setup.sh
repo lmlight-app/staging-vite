@@ -17,8 +17,14 @@ if ! command -v psql &>/dev/null; then
         echo "   または:       Postgres.app (postgresapp.com) / 公式インストーラ (postgresql.org) でも可"
         echo "   ※ brew は必須ではありません。pgvector 対応の PostgreSQL が起動していれば OK"
     else
-        echo "   sudo apt install postgresql postgresql-\$(ls /usr/lib/postgresql 2>/dev/null | sort -V | tail -1)-pgvector"
-        echo "   起動: pg_ctlcluster <ver> main start  または  systemctl start postgresql"
+        if command -v dnf &>/dev/null; then
+            echo "   sudo dnf install -y postgresql-server pgvector"
+            echo "   sudo postgresql-setup --initdb"
+            echo "   sudo systemctl enable --now postgresql"
+        else
+            echo "   sudo apt install postgresql postgresql-\$(ls /usr/lib/postgresql 2>/dev/null | sort -V | tail -1)-pgvector"
+            echo "   起動: pg_ctlcluster <ver> main start  または  systemctl start postgresql"
+        fi
     fi
     exit 1
 fi
@@ -29,6 +35,9 @@ if ! pg_isready -q 2>/dev/null; then
     echo "起動してから再度 install を実行してください:"
     if [[ "$OSTYPE" == "darwin"* ]]; then
         echo "   brew services start postgresql@16"
+    elif command -v postgresql-setup &>/dev/null; then
+        echo "   sudo postgresql-setup --initdb  (初回のみ)"
+        echo "   sudo systemctl enable --now postgresql"
     else
         echo "   sudo systemctl start postgresql"
     fi
@@ -66,9 +75,10 @@ if ! pg_admin -d "$DB_NAME" -c "CREATE EXTENSION IF NOT EXISTS vector;" >/dev/nu
     echo "[WARN] pgvector 拡張の有効化に失敗しました。RAG 機能を利用する場合は pgvector を導入してください:" >&2
     if [[ "$OSTYPE" == "darwin"* ]]; then
         echo "   brew install pgvector" >&2
+    elif command -v dnf &>/dev/null; then
+        echo "   sudo dnf install -y pgvector" >&2
     else
         echo "   sudo apt install postgresql-\$(psql -V | grep -oE '[0-9]+' | head -1)-pgvector" >&2
-        echo "   (RHEL/CentOS): sudo dnf install pgvector" >&2
     fi
 fi
 

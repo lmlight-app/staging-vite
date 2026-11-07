@@ -1,7 +1,9 @@
 #!/bin/bash
 set -e
 
-TOOLS_DIR="${HOME}/.local/db/tools"
+# 本体が自動で探す場所。sudo env DB_INSTALL_DIR=... で実行されても本体の配置先に置く
+TOOLS_DIR="${DB_INSTALL_DIR:-${HOME}/.local/db}/tools"
+APPIMAGE_URL="https://appimages.libreitalia.org/LibreOffice-still.basic-x86_64.AppImage"
 
 SUDO=""
 if [ "$(id -u)" != "0" ] && command -v sudo >/dev/null 2>&1; then
@@ -47,24 +49,51 @@ fi
 
 echo "Office画像化 (LibreOffice) をインストールします (ディスク約400-700MB)..."
 
-if command -v apt-get >/dev/null 2>&1; then
-    $SUDO apt-get update -qq
-    DEBIAN_FRONTEND=noninteractive $SUDO apt-get install -y --no-install-recommends libreoffice-impress
-elif command -v dnf >/dev/null 2>&1; then
-    $SUDO dnf install -y libreoffice-impress
-elif command -v zypper >/dev/null 2>&1; then
-    $SUDO zypper install -y libreoffice-impress
-else
-    echo "パッケージマネージャが見つかりません。AppImage で手動インストールしてください:"
-    echo "  1) https://ja.libreoffice.org/download/appimage/ から Basic AppImage を取得"
-    echo "  2) mkdir -p ${TOOLS_DIR} && mv LibreOffice-*.AppImage ${TOOLS_DIR}/"
-    echo "  3) cd ${TOOLS_DIR} && chmod +x LibreOffice-*.AppImage && ./LibreOffice-*.AppImage --appimage-extract"
-    echo "  4) printf '#!/bin/sh\\nexec ${TOOLS_DIR}/squashfs-root/AppRun \"\$@\"\\n' > ${TOOLS_DIR}/soffice && chmod +x ${TOOLS_DIR}/soffice"
-    echo "  5) 日本語フォントも必要です (無いと日本語が □ になります): Noto Sans CJK をインストールしてください"
+install_package() {
+    if command -v apt-get >/dev/null 2>&1; then
+        $SUDO apt-get update -qq \
+            && DEBIAN_FRONTEND=noninteractive $SUDO apt-get install -y --no-install-recommends libreoffice-impress
+    elif command -v dnf >/dev/null 2>&1; then
+        $SUDO dnf install -y libreoffice-impress
+    elif command -v zypper >/dev/null 2>&1; then
+        $SUDO zypper install -y libreoffice-impress
+    else
+        return 1
+    fi
+}
+
+# RHEL 10 は LibreOffice の RPM を配布しない (Rocky / Alma 10 も同じ想定)。公式の AppImage を展開して tools に置く
+install_appimage() {
+    case "$(uname -m)" in
+        x86_64|amd64) ;;
+        *) echo "[ERROR] AppImage は x86_64 のみです ($(uname -m))。LibreOffice を入れて SOFFICE_PATH で指定してください"; exit 1 ;;
+    esac
+    echo "AppImage を取得します (約 300MB)..."
+    mkdir -p "$TOOLS_DIR"
+    curl -fL --progress-bar -o "$TOOLS_DIR/LibreOffice.AppImage" "$APPIMAGE_URL"
+    chmod +x "$TOOLS_DIR/LibreOffice.AppImage"
+    rm -rf "$TOOLS_DIR/squashfs-root"
+    (cd "$TOOLS_DIR" && ./LibreOffice.AppImage --appimage-extract >/dev/null)
+    rm -f "$TOOLS_DIR/LibreOffice.AppImage"
+    printf '#!/bin/sh\nexec "%s/squashfs-root/AppRun" "$@"\n' "$TOOLS_DIR" > "$TOOLS_DIR/soffice"
+    chmod +x "$TOOLS_DIR/soffice"
+    if [ "$(id -u)" = "0" ] && [ -n "${SUDO_USER:-}" ]; then
+        chown -R "$SUDO_USER" "$TOOLS_DIR"
+    fi
+    "$TOOLS_DIR/soffice" --version || { echo "[ERROR] LibreOffice を起動できません"; exit 1; }
+}
+
+if [ "$(uname -s)" != "Linux" ]; then
+    echo "[ERROR] LibreOffice を入れてから再実行してください: brew install --cask libreoffice"
     exit 1
+fi
+
+if ! install_package; then
+    echo "[WARN] パッケージから入れられないので、AppImage に切り替えます"
+    install_appimage
 fi
 
 ensure_cjk_fonts
 
-echo "[OK] インストール完了: $(command -v soffice)"
+echo "[OK] インストール完了: $(command -v soffice || echo "$TOOLS_DIR/soffice")"
 echo "   管理画面 > 登録管理 の「Office画像化」で検出状態を確認できます (DigitalBase の再起動は不要)"

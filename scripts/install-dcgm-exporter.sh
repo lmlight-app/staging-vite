@@ -8,7 +8,7 @@ if [ "$(id -u)" -eq 0 ]; then SUDO=""; else SUDO="sudo"; fi
 
 if ! command -v dcgmi >/dev/null 2>&1; then
     echo "[ERROR] dcgmi が見つかりません。先に NVIDIA DCGM を導入してください:" >&2
-    echo "  https://developer.nvidia.com/dcgm  (apt: datacenter-gpu-manager-4-cuda13 等)" >&2
+    echo "  https://developer.nvidia.com/dcgm  (apt / dnf: datacenter-gpu-manager-4-cuda13 等)" >&2
     exit 1
 fi
 
