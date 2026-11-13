@@ -206,12 +206,13 @@ install_kokoro_native() {
     curl -fsSL "https://github.com/remsky/Kokoro-FastAPI/archive/refs/tags/${KOKORO_VERSION}.tar.gz" | as_db_user tar xz -C "$dir" --strip-components=1
 
     echo "Python と依存をインストール中 (PyTorch を含むので数分かかります)..."
-    as_db_user "$uv" venv --python 3.12 --managed-python "$dir/.venv"
-    as_db_user UV_HTTP_TIMEOUT=120 UV_HTTP_RETRIES=3 "$uv" sync --project "$dir" --frozen --extra "$extra" --no-install-project
+    venv="$dir/venv"
+    as_db_user "$uv" venv --python 3.12 --managed-python "$venv"
+    as_db_user UV_PROJECT_ENVIRONMENT="$venv" UV_HTTP_TIMEOUT=120 UV_HTTP_RETRIES=3 "$uv" sync --project "$dir" --frozen --extra "$extra" --no-install-project
 
     echo "音声モデルと日本語辞書を取得中..."
-    as_db_user "$dir/.venv/bin/python" "$dir/docker/scripts/download_model.py" --output "$dir/api/src/models/v1_0"
-    as_db_user "$dir/.venv/bin/python" -m unidic download
+    as_db_user "$venv/bin/python" "$dir/docker/scripts/download_model.py" --output "$dir/api/src/models/v1_0"
+    as_db_user "$venv/bin/python" -m unidic download
 
     espeak_data="$(find /usr/lib /usr/lib64 /usr/share -type d -name espeak-ng-data 2>/dev/null | head -1)"
     unit_tmp="$(mktemp)"
@@ -228,9 +229,9 @@ install_kokoro_native() {
         echo "WorkingDirectory=$dir"
         # SELinux は systemd がホーム配下のファイルを直接起動するのを止める (203/EXEC)。bash 経由なら通る
         if command -v selinuxenabled > /dev/null 2>&1 && selinuxenabled; then
-            echo "ExecStart=/bin/bash -c \"exec $dir/.venv/bin/python -m uvicorn api.src.main:app --host 127.0.0.1 --port $PORT\""
+            echo "ExecStart=/bin/bash -c \"exec $venv/bin/python -m uvicorn api.src.main:app --host 127.0.0.1 --port $PORT\""
         else
-            echo "ExecStart=$dir/.venv/bin/python -m uvicorn api.src.main:app --host 127.0.0.1 --port $PORT"
+            echo "ExecStart=$venv/bin/python -m uvicorn api.src.main:app --host 127.0.0.1 --port $PORT"
         fi
         echo "Restart=on-failure"
         echo "RestartSec=10"
