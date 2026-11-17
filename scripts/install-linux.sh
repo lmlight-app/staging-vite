@@ -4,8 +4,8 @@
 #   curl -fsSL https://raw.githubusercontent.com/lmlight-app/staging-vite/main/scripts/install-linux.sh | bash
 #   curl -fsSL .../install-linux.sh | bash -s -- --engine vllm                  # 新しい .env の LLM_BACKEND。エンジンは管理画面 (ライセンス) か db engine install vllm で入れる
 #   curl -fsSL .../install-linux.sh | bash -s -- --version 26.10.124
-#   curl -fsSL .../install-linux.sh | bash -s -- --bundle /media/usb/db [--engine vllm]   # make an offline bundle (installs nothing here)。AMD は --platform rocm、Intel は --platform xpu
-#   bash /media/usb/db/install-linux.sh                                          # offline host: install or update from the bundle
+#   curl -fsSL .../install-linux.sh | bash -s -- --bundle /media/usb/db-usb [--engine vllm]   # make an offline bundle (installs nothing here)。AMD は --platform rocm、Intel は --platform xpu
+#   bash /media/usb/db-usb/install-linux.sh                                          # offline host: install or update from the bundle
 set -e
 
 if [ -z "$HOME" ] || [ "$HOME" = "/" ]; then
