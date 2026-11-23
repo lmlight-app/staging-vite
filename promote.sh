@@ -26,11 +26,7 @@ cp "$STAGING_DIR/scripts/"*.ps1 "$DIST_DIR/scripts/" 2>/dev/null || true
 cp "$STAGING_DIR/scripts/"*.yml "$DIST_DIR/scripts/" 2>/dev/null || true
 cp "$STAGING_DIR/scripts/"*.example "$DIST_DIR/scripts/" 2>/dev/null || true
 
-# Inno Setup installer (EXE wizard) — .iss + post-install.ps1.
-# Without this, edits to installer/ in staging never reach dist_vite.
-mkdir -p "$DIST_DIR/scripts/installer"
-cp "$STAGING_DIR/scripts/installer/"*.iss "$DIST_DIR/scripts/installer/" 2>/dev/null || true
-cp "$STAGING_DIR/scripts/installer/"*.ps1 "$DIST_DIR/scripts/installer/" 2>/dev/null || true
+# Inno Setup の EXE インストーラ (installer/) は 2026-11-23 に配布をやめた (_archive/installer)。Windows は install-windows.ps1 → api.exe setup
 
 # Update repo URL refs back to dist_vite. Both the top-level scripts
 # and the installer's post-install.ps1 reference raw.githubusercontent
@@ -54,9 +50,6 @@ for f in *.sh *.ps1 *.yml *.example; do
   # script の self-reference (= 使い方コメント等の raw.githubusercontent .../main/scripts/X)
   # を R2 CDN (vite-scripts/X) へ。install-docker.sh / install-windows.ps1 等すべてに適用。
   sed -i '' 's|https://raw.githubusercontent.com/lmlight-app/dist_vite/main/scripts/|https://pub-a2cab4360f1748cab5ae1c0f12cddc0a.r2.dev/vite-scripts/|g' "$f"
-done
-for f in installer/*.iss installer/*.ps1; do
-  [ -f "$f" ] && sed -i '' 's|lmlight-app/staging-vite|lmlight-app/dist_vite|g' "$f"
 done
 
 # install-windows.ps1 has a separate convention: in staging the binary
