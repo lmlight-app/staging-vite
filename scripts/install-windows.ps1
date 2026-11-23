@@ -76,7 +76,10 @@ if ($env:DB_SKIP_SHA256 -eq "1") {
 $env:DB_INSTALL_DIR = $INSTALL_DIR
 Push-Location $INSTALL_DIR
 try {
-    & $bin setup --binary $bin --product-version $TARGET_VERSION
+    # PowerShell 5.1 は空の引数を外のプログラムに渡さないので、最新 (バージョンが空) の時は --product-version を付けない (本体が自分のバージョンを使う)
+    $setupArgs = @("setup", "--binary", $bin)
+    if ($TARGET_VERSION) { $setupArgs += @("--product-version", $TARGET_VERSION) }
+    & $bin @setupArgs
     $code = $LASTEXITCODE
 } finally {
     Pop-Location
