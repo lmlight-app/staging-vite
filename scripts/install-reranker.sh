@@ -40,7 +40,9 @@ db_unit_get() { [ -f "$DB_UNIT_FILE" ] && sed -n "s/^$1=//p" "$DB_UNIT_FILE" | h
 INSTALL_DIR="${DB_INSTALL_DIR:-$(db_unit_get WorkingDirectory || true)}"
 INSTALL_DIR="${INSTALL_DIR:-$HOME/.local/db}"
 ENV_FILE="$INSTALL_DIR/.env"
-VENV="$INSTALL_DIR/venv"
+# vLLM の環境: 管理画面・db engine install で入れた物は <install dir>/vllm/venv (2026-11-23 から)。それ以前の機は <install dir>/venv
+VENV="$INSTALL_DIR/vllm/venv"
+[ -x "$VENV/bin/vllm" ] || [ ! -x "$INSTALL_DIR/venv/bin/vllm" ] || VENV="$INSTALL_DIR/venv"
 MODEL="${1:-BAAI/bge-reranker-v2-m3}"
 PORT="${DB_RERANK_PORT:-8010}"
 GPU_FRACTION="${DB_RERANK_GPU_FRACTION:-0.10}"
@@ -257,7 +259,7 @@ echo "=============================================="
 
 if [ ! -x "$VENV/bin/vllm" ]; then
     echo "[ERROR] vLLM が見つかりません: $VENV/bin/vllm"
-    echo "   Reranker installer は vLLM edition 専用です (SGLang 版は今後対応、Ollama 版は対象外)。"
+    echo "   リランカーは vLLM で動かします。先に管理画面の推論エンジン (または db engine install vllm) で vLLM を入れてください。"
     exit 1
 fi
 if [ "$HAVE_ROOT" -eq 0 ] && [ -f "$UNIT_PATH" ]; then
