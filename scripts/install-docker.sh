@@ -85,6 +85,9 @@ env_unset() { awk -v k="$1" 'index($0, k "=") != 1' .env > .env.tmp; mv .env.tmp
 if [ ! -f .env ]; then
     cp docker.env.example .env
     env_set DB_PASSWORD "$(head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+    # 新しく入れる機は PostgreSQL 18。書いておかないと、次の更新で下の「前からの機」と見分けられない
+    env_set POSTGRES_IMAGE_TAG pg18
+    env_set POSTGRES_DATA_TARGET /var/lib/postgresql
     echo "[OK] Created $INSTALL_DIR/.env"
 elif [ -z "$(env_get POSTGRES_IMAGE_TAG)" ]; then
     # compose の既定が PostgreSQL 18 になる前に入れた機は 16 のデータを持っている。そのまま 16 で動かす (上げる時はバックアップから戻す)
