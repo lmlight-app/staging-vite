@@ -103,6 +103,8 @@ if ! command -v uv &>/dev/null; then
         || echo "[WARN] uv install 失敗。後で: curl -LsSf https://astral.sh/uv/install.sh | sh"
 fi
 
+# 26.11.262 より前の本体には api postgres が無い (PostgreSQL を同梱しない)。--version で前の本体を入れる時は前と同じく OS の PostgreSQL を使う
+if (cd "$INSTALL_DIR" && ./api postgres --help) >/dev/null 2>&1; then
 # DB: 同梱の PostgreSQL (本体のフォルダの postgres)。新しく入れる時と、.env がそれを指している時に用意し、使う DATABASE_URL を出す。
 # .env が外の PostgreSQL を指していれば何もしない (空を返す)。名前は DB_USER・DB_PASS・DB_NAME で変えられる (既定 digitalbase)
 echo "Setting up database..."
@@ -121,6 +123,68 @@ EOF
     if [ "$(cd "$INSTALL_DIR" && pwd -P)" != "$(cd "$HOME/.local" 2>/dev/null && pwd -P)/db" ]; then
         printf 'LICENSE_FILE_PATH=%s\nFILES_DIR=%s\n' "$INSTALL_DIR/license.lic" "$INSTALL_DIR/files" >> "$INSTALL_DIR/.env"
     fi
+fi
+else
+DB_USER="${DB_USER:-digitalbase}"
+DB_PASS="${DB_PASS:-digitalbase}"
+DB_NAME="${DB_NAME:-digitalbase}"
+
+# .env はこの機の識別 (推論エンジン・DB・署名鍵) だけ。置き場所は既定 (~/.local/db) と違う時だけ書く
+if [ ! -f "$INSTALL_DIR/.env" ]; then
+    cat > "$INSTALL_DIR/.env" << EOF
+LLM_BACKEND=none
+DATABASE_URL=postgresql://${DB_USER}:${DB_PASS}@localhost:5432/${DB_NAME}
+JWT_SECRET=$(openssl rand -hex 32)
+EOF
+    if [ "$(cd "$INSTALL_DIR" && pwd -P)" != "$(cd "$HOME/.local" 2>/dev/null && pwd -P)/db" ]; then
+        printf 'LICENSE_FILE_PATH=%s\nFILES_DIR=%s\n' "$INSTALL_DIR/license.lic" "$INSTALL_DIR/files" >> "$INSTALL_DIR/.env"
+    fi
+fi
+
+# Database setup
+if [ -f "$INSTALL_DIR/.env" ]; then
+    _DB_URL=$(grep -E "^DATABASE_URL=" "$INSTALL_DIR/.env" | head -1 | cut -d= -f2-)
+    if [ -n "$_DB_URL" ]; then
+        export DB_USER=$(echo "$_DB_URL" | sed -n 's|.*://\([^:]*\):.*|\1|p')
+        export DB_PASS=$(echo "$_DB_URL" | sed -n 's|.*://[^:]*:\([^@]*\)@.*|\1|p')
+        export DB_NAME=$(echo "$_DB_URL" | sed -n 's|.*/\([^?]*\).*|\1|p')
+    fi
+fi
+echo "Setting up database..."
+DB_USER="${DB_USER:-digitalbase}"
+DB_PASS="${DB_PASS:-digitalbase}"
+DB_NAME="${DB_NAME:-digitalbase}"
+
+if ! command -v psql &>/dev/null; then
+    echo "[ERROR] PostgreSQL がインストールされていません (pgvector 対応・16 以降)。"
+    echo "   Homebrew:  brew install postgresql@16 pgvector && brew services start postgresql@16"
+    echo "   または:    Postgres.app (postgresapp.com) / 公式インストーラ でも可 (brew 必須ではありません)"
+    exit 1
+fi
+if ! pg_isready -q 2>/dev/null; then
+    echo "[ERROR] PostgreSQL に接続できません (localhost:5432)。起動してください:"
+    echo "   brew services start postgresql@16   (Postgres.app なら app を起動)"
+    exit 1
+fi
+
+PG_SUPER=""
+if psql -U postgres -d postgres -tAc "SELECT 1" >/dev/null 2>&1; then
+    PG_SUPER="postgres"
+fi
+pg_admin() { psql ${PG_SUPER:+-U "$PG_SUPER"} "$@"; }
+
+if [ -z "$(pg_admin -d postgres -tAc "SELECT 1 FROM pg_roles WHERE rolname='$DB_USER'" 2>/dev/null)" ]; then
+    pg_admin -d postgres -c "CREATE USER $DB_USER WITH PASSWORD '$DB_PASS';" || echo "[WARN] CREATE USER $DB_USER に失敗"
+fi
+if [ -z "$(pg_admin -d postgres -tAc "SELECT 1 FROM pg_database WHERE datname='$DB_NAME'" 2>/dev/null)" ]; then
+    pg_admin -d postgres -c "CREATE DATABASE $DB_NAME OWNER $DB_USER;" || echo "[WARN] CREATE DATABASE $DB_NAME に失敗"
+fi
+pg_admin -d postgres -c "ALTER USER $DB_USER CREATEDB;" >/dev/null 2>&1 || true
+if ! pg_admin -d "$DB_NAME" -c "CREATE EXTENSION IF NOT EXISTS vector;" >/dev/null 2>&1; then
+    echo "[WARN] pgvector 拡張の有効化に失敗しました。RAG 機能を使う場合は:"
+    echo "   brew install pgvector   (Postgres.app は同梱のことが多い)"
+fi
+echo "[OK] Database setup complete (schemas and tables are created automatically on first startup)"
 fi
 
 cat > "$INSTALL_DIR/start.sh" << 'EOF'
