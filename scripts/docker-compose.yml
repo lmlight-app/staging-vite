@@ -74,14 +74,16 @@ x-xpu: &xpu
 
 services:
   db:
-    image: pgvector/pgvector:pg16
+    # 新しく入れる機は PostgreSQL 18 (本体の同梱と同じメジャー)。18 からの公式イメージは /var/lib/postgresql/<メジャー>/docker に置くので親を mount する。
+    # 前からの機 (16 のデータ) は install-docker.sh が .env に POSTGRES_IMAGE_TAG=pg16 と POSTGRES_DATA_TARGET=/var/lib/postgresql/data を書いて変えない
+    image: pgvector/pgvector:${POSTGRES_IMAGE_TAG:-pg18}
     restart: unless-stopped
     environment:
       POSTGRES_USER: digitalbase
       POSTGRES_PASSWORD: ${DB_PASSWORD:-digitalbase}
       POSTGRES_DB: digitalbase
     volumes:
-      - ./postgres-data:/var/lib/postgresql/data
+      - ./postgres-data:${POSTGRES_DATA_TARGET:-/var/lib/postgresql}
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U digitalbase -d digitalbase"]
       interval: 5s

@@ -86,6 +86,11 @@ if [ ! -f .env ]; then
     cp docker.env.example .env
     env_set DB_PASSWORD "$(head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n')"
     echo "[OK] Created $INSTALL_DIR/.env"
+elif [ -z "$(env_get POSTGRES_IMAGE_TAG)" ]; then
+    # compose の既定が PostgreSQL 18 になる前に入れた機は 16 のデータを持っている。そのまま 16 で動かす (上げる時はバックアップから戻す)
+    env_set POSTGRES_IMAGE_TAG pg16
+    env_set POSTGRES_DATA_TARGET /var/lib/postgresql/data
+    echo "[OK] Kept PostgreSQL 16 for the existing data (POSTGRES_IMAGE_TAG=pg16 in .env)"
 fi
 
 RECORDED="$(env_get COMPOSE_PROFILES | tr ',' '\n')"
