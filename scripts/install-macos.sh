@@ -247,6 +247,16 @@ HERE="$(pwd -P)"
 for p in $(pgrep -fx "./api" 2>/dev/null; pgrep -fx "$HERE/api" 2>/dev/null); do
     [ "$(lsof -a -p "$p" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p')" = "$HERE" ] && kill "$p" 2>/dev/null
 done
+# 同梱の PostgreSQL は本体と別のプロセスなので、本体が終わってから止める (systemd はサービスごと止める)
+for _ in $(seq 1 30); do
+    ALIVE=0
+    for p in $(pgrep -fx "./api" 2>/dev/null; pgrep -fx "$HERE/api" 2>/dev/null); do
+        [ "$(lsof -a -p "$p" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p')" = "$HERE" ] && ALIVE=1
+    done
+    [ "$ALIVE" -eq 0 ] && break
+    sleep 1
+done
+[ -f postgres/PG_VERSION ] && ./api postgres stop >/dev/null 2>&1
 echo "Stopped"
 EOF
 chmod +x "$INSTALL_DIR/stop.sh"
